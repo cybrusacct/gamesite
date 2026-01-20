@@ -1,34 +1,26 @@
 {
-  "name": "client",
-  "private": true,
-  "version": "0.0.0",
+  "name": "kemps-game-server",
+  "version": "1.0.0",
+  "description": "Kemps / Jackwhot multiplayer game server (Socket.IO + Express)",
+  "main": "index.js",
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "lint": "eslint .",
-    "preview": "vite preview"
+    "start": "node index.js",
+    "dev": "nodemon --watch . --ext js,jsx --exec node index.js",
+    "lint": "echo \"No linter configured\""
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.1.18",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "react-router-dom": "^7.12.0",
-    "socket.io-client": "^4.8.3"
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "helmet": "^6.0.1",
+    "socket.io": "^4.8.1",
+    "express-rate-limit": "^6.7.0"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.1",
-    "@tailwindcss/cli": "^4.1.18",
-    "@types/react": "^19.2.5",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.1",
-    "autoprefixer": "^10.4.23",
-    "eslint": "^9.39.1",
-    "eslint-plugin-react-hooks": "^7.0.1",
-    "eslint-plugin-react-refresh": "^0.4.24",
-    "globals": "^16.5.0",
-    "postcss": "^8.5.6",
-    "tailwindcss": "^4.1.18",
-    "vite": "^7.2.4"
-  }
+    "nodemon": "^2.0.22"
+  },
+  "license": "MIT"
 }

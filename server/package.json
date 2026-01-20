@@ -1,19 +1,30 @@
 {
-  "name": "server",
+  "name": "kemps-game-server",
   "version": "1.0.0",
-  "description": "Kemps game server",
-  "type": "module",
+  "description": "Kemps / Jackwhot multiplayer game server (Socket.IO + Express)",
   "main": "index.js",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-    "dev": "nodemon index.js",
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "nodemon --watch . --ext js,jsx --exec node index.js",
+    "lint": "echo \"No linter configured\""
   },
   "dependencies": {
+    "cors": "^2.8.5",
     "express": "^4.18.2",
-    "socket.io": "^4.9.1"
+    "helmet": "^6.0.1",
+    "socket.io": "^4.8.1",
+    "express-rate-limit": "^6.7.0"
+  },
+  "optionalDependencies": {
+    "@socket.io/redis-adapter": "^8.1.0",
+    "redis": "^4.6.7"
   },
   "devDependencies": {
-    "nodemon": "^3.1.11"
-  }
-  
+    "nodemon": "^2.0.22"
+  },
+  "license": "MIT"
 }

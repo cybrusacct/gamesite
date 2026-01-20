@@ -40,7 +40,7 @@ function App() {
         <Router>
           <Routes>
             {/* Landing page */}
-            <Route path="/" element={<LandingPage user={user} />} />
+            <Route path="/" element={<LandingPage user={user} socket={gameInfo?.socket} />} />
 
             {/* Join/Create Game */}
             <Route
@@ -92,4 +92,3 @@ function App() {
 }
 
 export default App;
-

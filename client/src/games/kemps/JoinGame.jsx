@@ -17,19 +17,20 @@ export default function JoinGame({ user, onJoin }) {
     // For simplicity we just join the room immediately (server creates it if missing)
     socket.emit("joinRoom", { roomId: createRoomId, username: user.username });
     onJoin({ socket, roomId: createRoomId, role: "You" });
-    navigate("/kemps");
+    navigate("/lobby");
   };
 
   const handleJoin = () => {
     if (!joinRoomId) return setError("Enter a room ID to join");
     socket.emit("joinRoom", { roomId: joinRoomId, username: user.username });
     onJoin({ socket, roomId: joinRoomId, role: "You" });
-    navigate("/kemps");
+    navigate("/lobby");
   };
 
-  // Listen to lobby updates (server emits "updateLobby" with array of player names)
+  // Listen to lobby updates (server emits "updateLobby" with object {players, host} )
   useEffect(() => {
-    socket.on("updateLobby", (playersArr) => {
+    socket.on("updateLobby", (payload) => {
+      const playersArr = Array.isArray(payload) ? payload : payload?.players || [];
       setPlayers(playersArr || []);
     });
 
