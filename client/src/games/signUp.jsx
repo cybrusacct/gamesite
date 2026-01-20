@@ -1,5 +1,8 @@
 import { useState } from "react";
 
+const API_URL = "https://my-gamesite.onrender.com";
+
+
 export default function SignUp({ onSuccess }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -37,11 +40,12 @@ export default function SignUp({ onSuccess }) {
     setLoading(true);
     try {
       if (mode === "signup") {
-        const res = await fetch("/api/signup", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username, pin: password }),
-        });
+const res = await fetch(`${API_URL}/api/signup`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ username, pin: password }),
+});
+
         const data = await res.json();
         if (!data.ok) {
           setError(data.error || "Signup failed");
@@ -50,11 +54,12 @@ export default function SignUp({ onSuccess }) {
         }
       } else {
         // login
-        const res = await fetch("/api/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username, pin: password }),
-        });
+const res = await fetch(`${API_URL}/api/signup`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ username, pin: password }),
+});
+
         const data = await res.json();
         if (!data.ok) {
           setError(data.error || "Wrong credentials");

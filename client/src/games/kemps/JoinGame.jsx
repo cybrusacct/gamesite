@@ -2,7 +2,8 @@ import { useState, useEffect } from "react";
 import { io } from "socket.io-client";
 import { useNavigate } from "react-router-dom";
 
-const socket = io("http://localhost:3000"); // connect to backend
+const socket = io("https://my-gamesite.onrender.com");
+
 
 export default function JoinGame({ user, onJoin }) {
   const [createRoomId, setCreateRoomId] = useState("");
