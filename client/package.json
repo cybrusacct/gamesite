@@ -4,6 +4,7 @@
   "private": true,
   "homepage": "https://yourusername.vercel.app",
   "dependencies": {
+    "@tailwindcss/vite": "^4.1.18",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^7.12.0",
@@ -17,7 +18,20 @@
     "eject": "react-scripts eject"
   },
   "browserslist": {
-    "production": [">0.2%", "not dead", "not op_mini all"],
-    "development": ["last 1 chrome version", "last 1 firefox version", "last 1 safari version"]
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.23",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.18"
   }
 }
