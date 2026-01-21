@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-const API_URL = "https://my-gamesite.onrender.com";
+const API_URL = process.env.REACT_APP_API_URL;
 
 
 export default function SignUp({ onSuccess }) {

@@ -2,7 +2,8 @@ import { useState, useEffect } from "react";
 import { io } from "socket.io-client";
 import { useNavigate } from "react-router-dom";
 
-const socket = io("https://my-gamesite.onrender.com");
+
+const socket = io(process.env.REACT_APP_API_URL);
 
 
 export default function JoinGame({ user, onJoin }) {
