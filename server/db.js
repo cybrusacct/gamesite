@@ -2,27 +2,21 @@ import fs from "fs";
 import path from "path";
 import Database from "better-sqlite3";
 
-const DATA_DIR = "/data";
-const DB_PATH = path.join(DATA_DIR, "database.sqlite");
+// Use environment variable if available, else default to relative path
+const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), "data", "app.sqlite");
 
-// Ensure /data exists (best-effort)
+// Ensure the folder exists
+const folder = path.dirname(DB_PATH);
 try {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(folder, { recursive: true });
 } catch (e) {
-  // If mkdir fails, rethrow because DB cannot initialize without data dir
-  console.warn("Warning: failed to ensure /data directory:", e && e.message);
+  console.warn("Warning: failed to ensure data directory:", e.message);
 }
 
-// Open SQLite database (synchronous, file will be created if missing)
+// Open SQLite database (file will be created if missing)
 const db = new Database(DB_PATH);
 
-// Initialize required tables if they do not exist
-// USERS TABLE:
-// id (integer, primary key, auto-increment)
-// username (text, unique)
-// pin (text)
-// points (integer, default 0)
-// matchesWon (integer, default 0)
+// USERS table
 db.prepare(
   `CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,8 +27,7 @@ db.prepare(
   )`
 ).run();
 
-// CHAT TABLE (optional):
-// id (integer primary key), username (text), message (text), createdAt (integer timestamp)
+// CHAT table
 db.prepare(
   `CREATE TABLE IF NOT EXISTS chat (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
