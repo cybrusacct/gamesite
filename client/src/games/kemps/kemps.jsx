@@ -3,8 +3,8 @@ import React, { useState, useEffect, useRef } from "react";
 const CARD_EMOJIS = {
   Circle: "⚫",
   Square: "⬛",
-  Triangle: "🖤",
   Cross: "➕",
+  Heart: "🖤",
 };
 const CARD_BACK_CLASS = "bg-gray-900";
 
@@ -192,7 +192,7 @@ export default function Kemps({ user, socket, roomId }) {
 
   const leaveRoom = () => {
     socket.emit("leaveRoom", { roomId, username: user.username });
-    window.location.href = "/join";
+    window.location.href = "/";
   };
 
   const openSuspectList = () => {

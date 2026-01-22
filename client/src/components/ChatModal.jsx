@@ -1,19 +1,30 @@
 import React, { useEffect, useState, useRef } from "react";
 
 /*
-  Simple global chat. Messages from self float to right, others to left (WhatsApp-like).
-  Each message shows sender and timestamp.
+  Simple global chat with lazy-load: loads latest messages on mount,
+  fetches older messages when user scrolls to top.
 */
+const API_CHAT = "/api/chat?limit=50";
+
 export default function ChatModal({ socket, username, onClose }) {
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const listRef = useRef(null);
+  const loadingRef = useRef(false);
+  const oldestTsRef = useRef(null);
 
   useEffect(() => {
     if (!socket) return;
 
+    // subscribe to real-time messages
     const handler = (msg) => {
       setMessages((m) => [...m, msg]);
+      // update oldestTs if null
+      if (!oldestTsRef.current) oldestTsRef.current = msg.ts;
+      // auto-scroll to bottom for new messages from others
+      if (listRef.current) {
+        listRef.current.scrollTop = listRef.current.scrollHeight;
+      }
       // small sound on receive
       try {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -34,10 +45,49 @@ export default function ChatModal({ socket, username, onClose }) {
   }, [socket]);
 
   useEffect(() => {
-    if (listRef.current) {
-      listRef.current.scrollTop = listRef.current.scrollHeight;
+    // load latest messages on mount
+    fetch(API_CHAT)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.ok && Array.isArray(data.messages)) {
+          setMessages(data.messages);
+          if (data.messages.length > 0) {
+            oldestTsRef.current = data.messages[0].ts;
+          }
+          // scroll to bottom after a tick
+          setTimeout(() => {
+            if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+          }, 50);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // scroll handler for lazy load older messages
+  const onScroll = (e) => {
+    if (!listRef.current || loadingRef.current) return;
+    if (listRef.current.scrollTop < 80) {
+      // load older messages before oldestTsRef
+      loadingRef.current = true;
+      const before = oldestTsRef.current;
+      fetch(`/api/chat?before=${encodeURIComponent(before)}&limit=50`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.ok && Array.isArray(data.messages) && data.messages.length > 0) {
+            setMessages((prev) => [...data.messages, ...prev]);
+            oldestTsRef.current = data.messages[0].ts;
+            // keep scroll position stable
+            setTimeout(() => {
+              if (listRef.current) listRef.current.scrollTop = 200;
+            }, 50);
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          loadingRef.current = false;
+        });
     }
-  }, [messages]);
+  };
 
   const send = () => {
     if (!text.trim()) return;
@@ -47,6 +97,7 @@ export default function ChatModal({ socket, username, onClose }) {
     // locally push it immediately
     setMessages((m) => [...m, payload]);
     setText("");
+    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
   };
 
   return (
@@ -57,7 +108,12 @@ export default function ChatModal({ socket, username, onClose }) {
           <button onClick={onClose} className="text-sm text-gray-600">Close</button>
         </div>
 
-        <div ref={listRef} className="p-3 overflow-auto flex-1 space-y-2" style={{ maxHeight: "50vh" }}>
+        <div
+          ref={listRef}
+          onScroll={onScroll}
+          className="p-3 overflow-auto flex-1 space-y-2"
+          style={{ maxHeight: "50vh" }}
+        >
           {messages.map((m, i) => {
             const isMe = m.username === username;
             const align = isMe ? "justify-end" : "justify-start";
@@ -65,7 +121,7 @@ export default function ChatModal({ socket, username, onClose }) {
             return (
               <div key={i} className={`flex ${align}`}>
                 <div className={`rounded-lg px-3 py-2 ${bubble} max-w-[80%]`}>
-                  <div className="text-xs(font-semibold">{m.username} <span className="text-[10px] text-gray-700">{new Date(m.ts).toLocaleTimeString()}</span></div>
+                  <div className="text-xs font-semibold">{m.username} <span className="text-[10px] text-gray-700">{new Date(m.ts).toLocaleTimeString()}</span></div>
                   <div className="text-sm">{m.message}</div>
                 </div>
               </div>

@@ -2,7 +2,6 @@ import { useState } from "react";
 
 const API_URL = "https://my-gamesite.onrender.com";
 
-
 export default function SignUp({ onSuccess }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -40,11 +39,11 @@ export default function SignUp({ onSuccess }) {
     setLoading(true);
     try {
       if (mode === "signup") {
-const res = await fetch(`${API_URL}/api/signup`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ username, pin: password }),
-});
+        const res = await fetch(`${API_URL}/api/signup`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, pin: password }),
+        });
 
         const data = await res.json();
         if (!data.ok) {
@@ -53,12 +52,12 @@ const res = await fetch(`${API_URL}/api/signup`, {
           onSuccess({ username, password });
         }
       } else {
-        // login
-const res = await fetch(`${API_URL}/api/signup`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ username, pin: password }),
-});
+        // login -> POST to /api/login (fixed)
+        const res = await fetch(`${API_URL}/api/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, pin: password }),
+        });
 
         const data = await res.json();
         if (!data.ok) {
@@ -83,8 +82,20 @@ const res = await fetch(`${API_URL}/api/signup`, {
         <h1 className="text-lg font-bold text-center">Sign Up / Log in</h1>
 
         <div className="flex gap-2 text-xs">
-          <button type="button" onClick={() => setMode("signup")} className={`flex-1 p-1 rounded ${mode === "signup" ? "bg-emerald-600" : "bg-zinc-800"}`}>Sign Up</button>
-          <button type="button" onClick={() => setMode("login")} className={`flex-1 p-1 rounded ${mode === "login" ? "bg-emerald-600" : "bg-zinc-800"}`}>Log In</button>
+          <button
+            type="button"
+            onClick={() => setMode("signup")}
+            className={`flex-1 p-1 rounded ${mode === "signup" ? "bg-emerald-600" : "bg-zinc-800"}`}
+          >
+            Sign Up
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("login")}
+            className={`flex-1 p-1 rounded ${mode === "login" ? "bg-emerald-600" : "bg-zinc-800"}`}
+          >
+            Log In
+          </button>
         </div>
 
         <input
@@ -108,9 +119,19 @@ const res = await fetch(`${API_URL}/api/signup`, {
         <button
           type="submit"
           disabled={loading}
-          className="bg-emerald-500 hover:bg-emerald-600 p-2 rounded font-bold"
+          className="relative flex items-center justify-center bg-emerald-500 hover:bg-emerald-600 p-2 rounded font-bold disabled:opacity-70"
         >
-          {mode === "signup" ? "Sign Up" : "Log In"}
+          {loading ? (
+            <>
+              <svg className="animate-spin -ml-1 mr-2 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+              </svg>
+              <span>Loading...</span>
+            </>
+          ) : (
+            <span>{mode === "signup" ? "Sign Up" : "Log In"}</span>
+          )}
         </button>
       </form>
     </div>

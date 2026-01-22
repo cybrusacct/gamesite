@@ -11,12 +11,14 @@ import Lobby from './games/kemps/Lobby';
 import Kemps from './games/kemps/kemps';
 import MemoryGame from './games/memorygame/MemoryGame';
 import FlagTrivia from './games/flag-trivia/FlagTrivia';
+import Navbar from './components/Navbar';
+import Leaderboard from './components/Leaderboard';
 
 function App() {
   const [stage, setStage] = useState("loading"); // loading | signup | landing
   const [user, setUser] = useState(null);
 
-  const [gameInfo, setGameInfo] = useState(null); 
+  const [gameInfo, setGameInfo] = useState(null);
   // { socket, roomId, role } => passed from JoinGame to Lobby/Kemps
 
   useEffect(() => {
@@ -40,6 +42,9 @@ function App() {
 
       {stage === "landing" && (
         <Router>
+          {/* Navbar shown for all routes once user logged in */}
+          <Navbar user={user} socket={gameInfo?.socket} />
+
           <Routes>
             {/* Landing page */}
             <Route path="/" element={<LandingPage user={user} socket={gameInfo?.socket} />} />
@@ -50,7 +55,7 @@ function App() {
               element={<JoinGame user={user} onJoin={(info) => setGameInfo(info)} />}
             />
 
-            {/* Lobby: wait for 4 players + countdown */}
+            {/* Lobby: wait for 2–4 players + manual start */}
             <Route
               path="/lobby"
               element={
@@ -86,6 +91,7 @@ function App() {
 
             <Route path="/memory" element={<MemoryGame user={user} />} />
             <Route path="/flag-trivia" element={<FlagTrivia user={user} />} />
+            <Route path="/leaderboard" element={<Leaderboard />} />
           </Routes>
         </Router>
       )}
