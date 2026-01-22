@@ -6,6 +6,8 @@ import { useNavigate } from "react-router-dom";
 const socket = io(process.env.REACT_APP_API_URL);
 
 
+
+
 export default function JoinGame({ user, onJoin }) {
   const [createRoomId, setCreateRoomId] = useState("");
   const [joinRoomId, setJoinRoomId] = useState("");

@@ -1,3 +1,5 @@
+import React from "react";
+import ReactDOM from 'react-dom/client'
 import { useState, useEffect } from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 
