@@ -1,60 +1,73 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import Card from "../../components/Card";
 import CardAnimation from "../../components/CardAnimation";
 import Avatar from "../../components/Avatar";
 import ConfettiOverlay from "../../components/ConfettiOverlay";
 import RedOverlay from "../../components/RedOverlay";
 import useSocket from "../../hooks/useSocket";
-import { playPass, playSignal, playSuspect, playMatchEnd, playJackwhotFalse, playKick } from "../../utils/sounds";
+import { playPass } from "../../utils/sounds";
 
-export default function Kemps({ user, roomId }) {
-  const socket = useSocket();
+/*
+  Classic Kemps board layout:
+   - big centered green board
+   - ally row top (backs)
+   - left/right opponents vertical stacks (backs)
+   - player hand at bottom (faces)
+*/
+
+export default function Kemps({ user, socket: socketProp, roomId }) {
+  const socket = socketProp || useSocket();
+
   const [hands, setHands] = useState({});
   const [selectedIndex, setSelectedIndex] = useState(null);
   const [lobbyPlayers, setLobbyPlayers] = useState([]);
   const [currentTurnUsername, setCurrentTurnUsername] = useState(null);
   const [gameStarted, setGameStarted] = useState(false);
-  const [pendingSignal, setPendingSignal] = useState(null);
-  const [showJackwhotLocal, setShowJackwhotLocal] = useState(false);
   const [revealedPlayers, setRevealedPlayers] = useState([]);
   const [lastPassAnim, setLastPassAnim] = useState(null);
-  const [gameOverInfo, setGameOverInfo] = useState(null);
-  const [showGameOver, setShowGameOver] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
   const [showRed, setShowRed] = useState(false);
+  const [gameOverInfo, setGameOverInfo] = useState(null);
+  const [showGameOver, setShowGameOver] = useState(false);
 
-  const myIndex = lobbyPlayers.indexOf(user.username);
+  // compute positions robustly even if players missing
+  const myIndex = lobbyPlayers.indexOf(user?.username);
   const ally = myIndex >= 0 && lobbyPlayers.length > 0 ? lobbyPlayers[(myIndex + 2) % lobbyPlayers.length] : null;
-  const opponents = lobbyPlayers.filter((p) => p !== user.username && p !== ally);
+  const enemyLeft = myIndex >= 0 && lobbyPlayers.length > 0 ? lobbyPlayers[(myIndex + (lobbyPlayers.length - 1)) % lobbyPlayers.length] : null;
+  const enemyRight = myIndex >= 0 && lobbyPlayers.length > 0 ? lobbyPlayers[(myIndex + 1) % lobbyPlayers.length] : null;
 
+  // ensure Card component uses same faces as server (server: Circle, Square, Cross, Heart)
   useEffect(() => {
     if (!socket || !roomId) return;
+    // join on mount
     socket.emit("joinRoom", { roomId, username: user.username });
 
-    const uLobby = (payload) => {
+    const handleUpdateLobby = (payload) => {
       const players = Array.isArray(payload) ? payload : payload?.players || [];
       setLobbyPlayers(players || []);
     };
-    socket.on("updateLobby", uLobby);
+    socket.on("updateLobby", handleUpdateLobby);
 
     socket.on("startGame", (room) => {
-      setHands(room.hands || {});
-      setLobbyPlayers(room.players || []);
+      // server sends full room with hands and players
+      const rplayers = room?.players || [];
+      setLobbyPlayers(rplayers);
+      setHands(room?.hands || {});
       setGameStarted(true);
-      setCurrentTurnUsername((room.players || [])[room.turnIndex ?? 0]);
-      setSelectedIndex(null);
-      setPendingSignal(null);
-      setRevealedPlayers([]);
+      setCurrentTurnUsername(rplayers[room?.turnIndex ?? 0] || null);
+      setRevealedPlayers(room?.revealedPlayers || []);
       setShowGameOver(false);
       setGameOverInfo(null);
-      playMatchStart();
     });
 
     socket.on("updateGame", (room) => {
-      setHands(room.hands || {});
-      setLobbyPlayers(room.players || []);
-      setCurrentTurnUsername((room.players || [])[room.turnIndex ?? 0]);
-      if (room.lastPass) {
+      // update hands and turn
+      setHands(room?.hands || {});
+      setLobbyPlayers(room?.players || []);
+      setCurrentTurnUsername((room?.players || [])[room?.turnIndex ?? 0] || null);
+
+      // last pass animation handling
+      if (room?.lastPass) {
         setLastPassAnim(room.lastPass);
         setTimeout(() => setLastPassAnim(null), 800);
       } else {
@@ -62,38 +75,16 @@ export default function Kemps({ user, roomId }) {
       }
     });
 
-    // passAnimation should display only card back for everyone
+    // passAnimation (card-back visible to all)
     socket.on("passAnimation", (data) => {
       setLastPassAnim(data);
-      // play pass sound
       playPass();
       setTimeout(() => setLastPassAnim(null), 800);
     });
 
-    socket.on("receiveCard", ({ from, to, card }) => {
-      if (to === user.username) {
-        setHands((prev) => {
-          const myHand = prev[user.username] ? [...prev[user.username]] : [];
-          myHand.push(card);
-          return { ...prev, [user.username]: myHand };
-        });
-      }
-    });
-
-    socket.on("signalSent", (data) => {
-      setPendingSignal(data);
-      if (data && data.ally === user.username) {
-        setShowJackwhotLocal(true);
-        setTimeout(() => setShowJackwhotLocal(false), 3000);
-      } else {
-        setShowJackwhotLocal(false);
-      }
-      playSignal();
-    });
-
-    socket.on("revealCards", ({ target, hands }) => {
-      setRevealedPlayers((prev) => prev.includes(target) ? prev : [...prev, target]);
-      setHands(hands || {});
+    socket.on("revealCards", ({ target, hands: newHands }) => {
+      setRevealedPlayers((prev) => (prev.includes(target) ? prev : [...prev, target]));
+      if (newHands) setHands(newHands);
     });
 
     socket.on("gameOver", (info) => {
@@ -103,47 +94,27 @@ export default function Kemps({ user, roomId }) {
       setRevealedPlayers(Object.keys(info.hands || {}));
       if (info.winners && info.winners.includes(user.username)) {
         setShowConfetti(true);
-        setTimeout(() => setShowConfetti(false), 2500);
-        playMatchEnd();
+        setTimeout(() => setShowConfetti(false), 2400);
       } else {
         setShowRed(true);
         setTimeout(() => setShowRed(false), 2000);
-        playJackwhotFalse();
       }
     });
 
-    socket.on("playSound", ({ type }) => {
-      // map server sound types to local playback
-      if (type === "suspect") playSuspect();
-      else if (type === "signal") playSignal();
-      else if (type === "jackwhot-false") playJackwhotFalse();
-      else if (type === "matchEnd" || type === "match-end") playMatchEnd();
-      else if (type === "kick") playKick();
-      else if (type === "pass") playPass();
-      else if (type === "matchStart") playMatchStart();
-    });
-
-    socket.on("kicked", () => {
-      window.location.href = "/";
-    });
-
+    // cleanup listeners on unmount
     return () => {
-      socket.off("updateLobby", uLobby);
+      socket.off("updateLobby", handleUpdateLobby);
       socket.off("startGame");
       socket.off("updateGame");
       socket.off("passAnimation");
-      socket.off("receiveCard");
-      socket.off("signalSent");
       socket.off("revealCards");
       socket.off("gameOver");
-      socket.off("playSound");
-      socket.off("kicked");
     };
   }, [socket, roomId, user.username]);
 
-  const selectCard = (i) => {
+  const selectCard = (index) => {
     if (currentTurnUsername !== user.username) return;
-    setSelectedIndex(i);
+    setSelectedIndex(index);
   };
 
   const passCard = () => {
@@ -153,125 +124,125 @@ export default function Kemps({ user, roomId }) {
     setSelectedIndex(null);
   };
 
-  const sendSignal = () => {
+  const signal = () => {
     socket.emit("sendSignal", { roomId, username: user.username });
   };
 
-  const callJackwhot = () => {
+  const callJack = () => {
     socket.emit("callJackwhot", { roomId, callerUsername: user.username });
   };
 
-  const suspectTarget = (target) => {
+  const openSuspect = (target) => {
     socket.emit("suspect", { roomId, suspector: user.username, target });
   };
 
-  const rematch = () => {
-    socket.emit("rematch", { roomId, username: user.username });
+  // helper safe access
+  const safeHand = (uname) => (hands && hands[uname]) ? hands[uname] : [];
+
+  // render a face-up card (you) or back for opponents/ally (unless revealed)
+  const renderPlayerCards = (playerUsername, small = false) => {
+    const isYou = playerUsername === user.username;
+    const isRevealed = revealedPlayers.includes(playerUsername);
+    const cards = safeHand(playerUsername);
+    const size = small ? "sm" : "md";
+    return (
+      <div className={`flex ${small ? "gap-2" : "gap-3"} items-center`}>
+        {cards.map((card, i) => {
+          const faceUp = isYou || isRevealed;
+          return (
+            <div key={`${playerUsername}-${i}`} style={{ cursor: isYou ? "pointer" : "default" }} onClick={() => isYou && selectCard(i)}>
+              <Card face={card} faceUp={faceUp} size={small ? "sm" : "md"} selected={isYou && selectedIndex === i} />
+            </div>
+          );
+        })}
+      </div>
+    );
   };
 
-  const isRevealed = (player) => revealedPlayers.includes(player);
-  const myHand = hands[user.username] || [];
-
+  // top header + board container
   return (
-    <div className="min-h-screen bg-gradient-to-b from-green-800 to-green-900 text-white pb-24">
+    <div className="min-h-screen bg-green-900 text-white flex flex-col items-center px-2 py-4">
       <ConfettiOverlay show={showConfetti} />
       <RedOverlay show={showRed} />
       <CardAnimation event={lastPassAnim} />
 
-      <div className="max-w-lg mx-auto px-3 pt-4">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-3">
-            <Avatar name={user.username} size="sm" />
-            <div>
-              <div className="font-semibold text-base leading-tight">{user.username}</div>
-              <div className="text-xs text-green-200">Turn: <span className="font-medium">{currentTurnUsername || "—"}</span></div>
-            </div>
-          </div>
+      <div className="text-center mb-2">
+        <h1 className="text-xl font-bold">Kemps (Jackwhot)</h1>
+        <div className="text-xs">Player: {user.username}</div>
+      </div>
 
-          <div className="text-right">
-            <div className="text-xs text-green-100">Room: <span className="font-medium">{roomId}</span></div>
-          </div>
-        </div>
-
-        <div className="mb-4">
-          <div className="flex items-center justify-start gap-3 mb-2">
-            <div className="flex items-center gap-2">
-              <div className="text-xs text-green-100">Ally</div>
-            </div>
-          </div>
-          <div className="flex gap-2 overflow-x-auto py-1" data-player-area={ally || ""}>
-            {(hands[ally] || []).map((c, i) => (
-              <div key={i} className="flex-shrink-0">
-                <Card face={c} faceUp={isRevealed(ally)} size="sm" />
-              </div>
-            ))}
+      {/* centered big board */}
+      <div className="relative w-full max-w-3xl bg-green-700 rounded-xl p-6">
+        {/* Ally row at top */}
+        <div className="flex flex-col items-center mb-6">
+          <div className="text-sm mb-2">Ally: {ally}</div>
+          <div className="bg-green-600 rounded px-4 py-4 w-full flex justify-center" data-player-area={ally || ""}>
+            {/* show backs for ally (or faces if revealed) */}
+            {renderPlayerCards(ally, true)}
           </div>
         </div>
 
-        <div className="mb-4 grid grid-cols-2 gap-3">
-          {opponents.map((op, idx) => (
-            <div key={op} className="bg-zinc-800 rounded p-2 flex flex-col items-center" data-player-area={op}>
-              <div className="flex items-center gap-2 mb-2">
-                <Avatar name={op} size="sm" />
-                <div className="text-sm font-medium">{op}</div>
-              </div>
-              <div className="flex gap-1 overflow-x-auto">
-                {(hands[op] || []).map((c, i) => (
-                  <div key={i} className="flex-shrink-0">
-                    <Card face={c} faceUp={isRevealed(op)} size="xs" />
-                  </div>
-                ))}
-              </div>
+        {/* Middle: left & right opponents */}
+        <div className="flex justify-between items-start">
+          {/* left opponent vertical */}
+          <div className="flex flex-col items-center space-y-2" data-player-area={enemyLeft || ""}>
+            <div className="text-xs transform -rotate-90 whitespace-nowrap">{enemyLeft || ""}</div>
+            <div className="flex flex-col gap-2">
+              {(safeHand(enemyLeft) || []).map((_, i) => (
+                <div key={`L-${i}`} className="w-10 h-16">
+                  <Card face={null} faceUp={false} size="sm" />
+                </div>
+              ))}
             </div>
-          ))}
-          {opponents.length < 2 && <div className="col-span-2 text-center text-xs text-gray-300">Waiting for opponents...</div>}
+          </div>
+
+          {/* center empty play area (visual) */}
+          <div className="flex-1 mx-6 min-h-[220px] rounded-lg border-0"></div>
+
+          {/* right opponent vertical */}
+          <div className="flex flex-col items-center space-y-2" data-player-area={enemyRight || ""}>
+            <div className="text-xs transform rotate-90 whitespace-nowrap">{enemyRight || ""}</div>
+            <div className="flex flex-col gap-2">
+              {(safeHand(enemyRight) || []).map((_, i) => (
+                <div key={`R-${i}`} className="w-10 h-16">
+                  <Card face={null} faceUp={false} size="sm" />
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
-        <div className="mb-2">
-          <div className="text-sm mb-1">Your Hand</div>
-          <div className="flex gap-2 overflow-x-auto py-2" data-player-area={user.username}>
-            {myHand.map((c, i) => (
-              <div key={i} className="flex-shrink-0" onClick={() => selectCard(i)}>
-                <Card face={c} faceUp={true} size="md" selected={selectedIndex === i} />
-              </div>
-            ))}
+        {/* Bottom: your hand */}
+        <div className="mt-6 flex flex-col items-center">
+          <div className="text-sm mb-2">You</div>
+          <div className="flex gap-3 justify-center" data-player-area={user.username}>
+            {renderPlayerCards(user.username, false)}
           </div>
         </div>
       </div>
 
-      <div className="fixed bottom-0 left-0 right-0 p-3 bg-black/60 backdrop-blur-sm border-t border-black/40">
-        <div className="max-w-lg mx-auto flex items-center gap-2">
-          <button
-            onClick={passCard}
-            className={`flex-1 rounded py-3 text-sm font-semibold ${currentTurnUsername === user.username ? "bg-emerald-500 text-black" : "bg-zinc-700 text-gray-300"}`}
-            disabled={currentTurnUsername !== user.username}
-          >
-            Pass Selected
-          </button>
-
-          <button onClick={sendSignal} className="px-3 py-3 rounded bg-yellow-400 text-black text-sm font-semibold">Signal</button>
-
-          <div className="relative">
-            <button className="px-3 py-3 rounded bg-indigo-600 text-white text-sm font-semibold">Suspect</button>
-          </div>
+      {/* controls */}
+      <div className="mt-4 flex gap-3">
+        <button onClick={passCard} disabled={currentTurnUsername !== user.username} className={`px-4 py-2 rounded ${currentTurnUsername === user.username ? "bg-white text-green-800" : "bg-zinc-700 text-zinc-300"}`}>Pass Selected</button>
+        <button onClick={signal} className="px-3 py-2 rounded bg-yellow-400 text-black">Signal</button>
+        <div className="relative">
+          <button className="px-3 py-2 rounded bg-indigo-600 text-white">Suspect</button>
         </div>
-
-        {showJackwhotLocal && (
-          <div className="max-w-lg mx-auto mt-2 text-center">
-            <button onClick={callJackwhot} className="bg-white text-green-800 px-4 py-2 rounded font-bold">JACKWHOT!</button>
-          </div>
-        )}
       </div>
 
+      {/* small turn info */}
+      <div className="mt-2 text-xs">Turn: <span className="font-bold">{currentTurnUsername ?? "—"}</span></div>
+
+      {/* Game over modal */}
       {showGameOver && gameOverInfo && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
           <div className="bg-white text-black rounded-lg p-4 w-full max-w-sm">
             <h2 className="text-lg font-bold mb-2">{gameOverInfo.winners.includes(user.username) ? "You Won 🎉" : "You Lose 😞"}</h2>
             <p className="text-sm mb-2">Winning Team: {gameOverInfo.winningTeam}</p>
             <p className="text-sm mb-2">Winners: {gameOverInfo.winners.join(", ")}</p>
 
             <div className="mt-2 flex gap-2">
-              <button onClick={rematch} className="flex-1 bg-emerald-500 text-white px-3 py-1 rounded">Rematch</button>
+              <button onClick={() => { socket.emit("rematch", { roomId, username: user.username }); setShowGameOver(false);} } className="flex-1 bg-emerald-500 text-white px-3 py-1 rounded">Rematch</button>
               <button onClick={() => { setShowGameOver(false); window.location.href = "/"; }} className="flex-1 bg-gray-700 text-white px-3 py-1 rounded">Exit</button>
             </div>
           </div>
