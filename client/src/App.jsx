@@ -1,5 +1,4 @@
 import React from "react";
-import ReactDOM from 'react-dom/client'
 import { useState, useEffect } from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 
@@ -12,7 +11,6 @@ import Kemps from './games/kemps/kemps';
 import MemoryGame from './games/memorygame/MemoryGame';
 import FlagTrivia from './games/flag-trivia/FlagTrivia';
 import Navbar from './components/Navbar';
-import Leaderboard from './components/Leaderboard';
 
 function App() {
   const [stage, setStage] = useState("loading"); // loading | signup | landing
@@ -28,8 +26,9 @@ function App() {
     }
   }, [stage]);
 
+
   return (
-    <>
+    <div className="bg-[#10171f]">
       {stage === "loading" && <LoadingScreen />}
       {stage === "signup" && (
         <SignUp
@@ -91,11 +90,11 @@ function App() {
 
             <Route path="/memory" element={<MemoryGame user={user} />} />
             <Route path="/flag-trivia" element={<FlagTrivia user={user} />} />
-            <Route path="/leaderboard" element={<Leaderboard />} />
+            {/* Leaderboard is now a modal opened from the Navbar; no separate route */}
           </Routes>
         </Router>
       )}
-    </>
+    </div>
   );
 }
 

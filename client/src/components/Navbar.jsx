@@ -2,10 +2,12 @@ import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import ChatModal from "../components/ChatModal";
 import ProfileModal from "./ProfileModal";
+import LeaderboardModal from "./LeaderboardModal";
 
 export default function Navbar({ user, socket, onOpenProfile }) {
   const [showChat, setShowChat] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
   const navigate = useNavigate();
 
   return (
@@ -18,7 +20,7 @@ export default function Navbar({ user, socket, onOpenProfile }) {
         <div className="flex items-center gap-3">
           <button onClick={() => setShowChat(true)} className="p-2 rounded bg-zinc-800">💬 Chat</button>
           <button onClick={() => setShowProfile(true)} className="p-2 rounded bg-zinc-800">Profile</button>
-          <button onClick={() => navigate("/leaderboard")} className="p-2 rounded bg-zinc-800">🏆 Leaderboard</button>
+          <button onClick={() => setShowLeaderboard(true)} className="p-2 rounded bg-zinc-800">🏆 Leaderboard</button>
         </div>
       </nav>
 
@@ -26,6 +28,7 @@ export default function Navbar({ user, socket, onOpenProfile }) {
 
       {showChat && <ChatModal socket={socket} username={user?.username} onClose={() => setShowChat(false)} />}
       {showProfile && <ProfileModal username={user?.username} onClose={() => setShowProfile(false)} />}
+      {showLeaderboard && <LeaderboardModal onClose={() => setShowLeaderboard(false)} />}
     </>
   );
 }

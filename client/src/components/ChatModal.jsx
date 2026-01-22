@@ -3,6 +3,9 @@ import React, { useEffect, useState, useRef } from "react";
 /*
   Simple global chat with lazy-load: loads latest messages on mount,
   fetches older messages when user scrolls to top.
+
+  Fix: Don't locally push the message when sending; rely on server broadcast
+  to avoid duplicate messages in the client.
 */
 const API_CHAT = "/api/chat?limit=50";
 
@@ -18,14 +21,21 @@ export default function ChatModal({ socket, username, onClose }) {
 
     // subscribe to real-time messages
     const handler = (msg) => {
-      setMessages((m) => [...m, msg]);
+      setMessages((m) => {
+        // prevent duplicates by checking last message
+        const last = m.length ? m[m.length - 1] : null;
+        if (last && last.ts === msg.ts && last.username === msg.username && last.message === msg.message) {
+          return m;
+        }
+        return [...m, msg];
+      });
       // update oldestTs if null
-      if (!oldestTsRef.current) oldestTsRef.current = msg.ts;
-      // auto-scroll to bottom for new messages from others
+      if (!oldestTsRef.current && msg.ts) oldestTsRef.current = msg.ts;
+      // auto-scroll to bottom for new messages
       if (listRef.current) {
         listRef.current.scrollTop = listRef.current.scrollHeight;
       }
-      // small sound on receive
+      // small sound on receive - optional: keep small tone here
       try {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
         const o = ctx.createOscillator();
@@ -70,13 +80,17 @@ export default function ChatModal({ socket, username, onClose }) {
       // load older messages before oldestTsRef
       loadingRef.current = true;
       const before = oldestTsRef.current;
+      if (!before) {
+        loadingRef.current = false;
+        return;
+      }
       fetch(`/api/chat?before=${encodeURIComponent(before)}&limit=50`)
         .then((r) => r.json())
         .then((data) => {
           if (data.ok && Array.isArray(data.messages) && data.messages.length > 0) {
             setMessages((prev) => [...data.messages, ...prev]);
             oldestTsRef.current = data.messages[0].ts;
-            // keep scroll position stable
+            // keep scroll position stable (approx)
             setTimeout(() => {
               if (listRef.current) listRef.current.scrollTop = 200;
             }, 50);
@@ -94,9 +108,9 @@ export default function ChatModal({ socket, username, onClose }) {
     const ts = new Date().toISOString();
     const payload = { username, message: text.trim(), ts };
     if (socket) socket.emit("globalChat", payload);
-    // locally push it immediately
-    setMessages((m) => [...m, payload]);
+    // DO NOT locally push: server will broadcast via globalChatMessage and client will append once
     setText("");
+    // keep input focus
     if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
   };
 

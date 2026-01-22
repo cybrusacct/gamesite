@@ -1,27 +1,42 @@
-/*
-  Small sound helpers for suspect / jackwhot / match end events.
-  Uses WebAudio API.
+/* Play short sound effects from public/assets folder.
+   Expected files (place in client/public/assets):
+     - pass.mp3
+     - match-start.mp3
+     - match-end.mp3
+     - signal.mp3
+     - kick.mp3
+     - suspect.mp3
+     - jackwhot-false.mp3
+
+   Usage: import { playPass, playSignal, ... } from '../utils/sounds'
+   The code falls back gracefully if audio cannot be played.
 */
-export function playTone(freq = 440, duration = 150) {
+
+const audioFiles = {
+  pass: "/assets/pass.mp3",
+  "match-start": "/assets/match-start.mp3",
+  "match-end": "/assets/match-end.mp3",
+  signal: "/assets/signal.mp3",
+  kick: "/assets/kick.mp3",
+  suspect: "/assets/suspect.mp3",
+  "jackwhot-false": "/assets/jackwhot-false.mp3",
+};
+
+function playUrl(url) {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = "sine";
-    o.frequency.value = freq;
-    o.connect(g);
-    g.connect(ctx.destination);
-    o.start();
-    g.gain.setValueAtTime(0.0001, ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration / 1000);
-    setTimeout(() => { try { o.stop(); } catch (e) {} }, duration + 30);
+    const a = new Audio(url);
+    a.volume = 0.9;
+    // Play returns a promise; swallow rejections
+    a.play && a.play().catch(() => {});
   } catch (e) {
-    // ignore on unsupported platforms
+    // ignore
   }
 }
 
-export function playSuspect() { playTone(520, 180); }
-export function playSignal() { playTone(660, 120); }
-export function playJackwhotFalse() { playTone(220, 400); }
-export function playMatchEnd() { playTone(880, 200); }
+export function playPass() { playUrl(audioFiles.pass); }
+export function playMatchStart() { playUrl(audioFiles["match-start"]); }
+export function playMatchEnd() { playUrl(audioFiles["match-end"]); }
+export function playSignal() { playUrl(audioFiles.signal); }
+export function playKick() { playUrl(audioFiles.kick); }
+export function playSuspect() { playUrl(audioFiles.suspect); }
+export function playJackwhotFalse() { playUrl(audioFiles["jackwhot-false"]); }

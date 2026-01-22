@@ -26,6 +26,7 @@ export default function Lobby({ user, socket: socketProp, roomId, role }) {
     });
 
     socket.on("startGame", () => {
+      // Navigate only when server emits startGame (ensures synchronized start for all)
       navigate("/kemps");
     });
 
@@ -70,9 +71,10 @@ export default function Lobby({ user, socket: socketProp, roomId, role }) {
 
   const handleManualStart = () => {
     if (!isHost) return;
+    // allow start when players are between 2 and 4 (inclusive)
     if (players.length >= 2 && players.length <= 4) {
+      // do not navigate here; server will emit 'startGame' when countdown completes
       socket.emit("startGame", { roomId });
-      navigate("/kemps");
     }
   };
 

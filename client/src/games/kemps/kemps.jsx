@@ -1,386 +1,270 @@
 import React, { useState, useEffect, useRef } from "react";
+import Card from "../../components/Card";
+import CardAnimation from "../../components/CardAnimation";
+import Avatar from "../../components/Avatar";
+import ConfettiOverlay from "../../components/ConfettiOverlay";
+import RedOverlay from "../../components/RedOverlay";
+import useSocket from "../../hooks/useSocket";
+import { playPass, playSignal, playSuspect, playMatchEnd, playJackwhotFalse, playKick } from "../../utils/sounds";
 
-const CARD_EMOJIS = {
-  Circle: "⚫",
-  Square: "⬛",
-  Cross: "➕",
-  Heart: "🖤",
-};
-const CARD_BACK_CLASS = "bg-gray-900";
-
-export default function Kemps({ user, socket, roomId }) {
+export default function Kemps({ user, roomId }) {
+  const socket = useSocket();
   const [hands, setHands] = useState({});
   const [selectedIndex, setSelectedIndex] = useState(null);
-  const [message, setMessage] = useState("");
-  const [turnIndex, setTurnIndex] = useState(0);
-  const [currentTurnUsername, setCurrentTurnUsername] = useState(null);
-  const [showJackwhotLocal, setShowJackwhotLocal] = useState(false); // whether I (ally) see the jackwhot button
   const [lobbyPlayers, setLobbyPlayers] = useState([]);
-  const [countdown, setCountdown] = useState(5);
+  const [currentTurnUsername, setCurrentTurnUsername] = useState(null);
   const [gameStarted, setGameStarted] = useState(false);
-  const [signalDisabled, setSignalDisabled] = useState(false);
-  const [pendingSignal, setPendingSignal] = useState(null); // { signer, ally }
-  const [revealedPlayers, setRevealedPlayers] = useState([]); // players whose hands are revealed
-  const [showSuspectList, setShowSuspectList] = useState(false);
+  const [pendingSignal, setPendingSignal] = useState(null);
+  const [showJackwhotLocal, setShowJackwhotLocal] = useState(false);
+  const [revealedPlayers, setRevealedPlayers] = useState([]);
+  const [lastPassAnim, setLastPassAnim] = useState(null);
+  const [gameOverInfo, setGameOverInfo] = useState(null);
   const [showGameOver, setShowGameOver] = useState(false);
-  const [gameOverInfo, setGameOverInfo] = useState(null); // { win, winners, winningTeam, hands }
-  const [lastPassAnim, setLastPassAnim] = useState(null); // { from, to, card }
-  const movingCardRef = useRef(null);
+  const [showConfetti, setShowConfetti] = useState(false);
+  const [showRed, setShowRed] = useState(false);
 
-  // Compute positions (guard against missing players)
   const myIndex = lobbyPlayers.indexOf(user.username);
-  const ally = myIndex >= 0 ? lobbyPlayers[(myIndex + 2) % 4] : "Ally";
-  const enemyLeft = myIndex >= 0 ? lobbyPlayers[(myIndex + 3) % 4] : "Left";
-  const enemyRight = myIndex >= 0 ? lobbyPlayers[(myIndex + 1) % 4] : "Right";
+  const ally = myIndex >= 0 && lobbyPlayers.length > 0 ? lobbyPlayers[(myIndex + 2) % lobbyPlayers.length] : null;
+  const opponents = lobbyPlayers.filter((p) => p !== user.username && p !== ally);
 
-  // Simple tone player using WebAudio (no external files)
-  const audioCtxRef = useRef(null);
-  function playTone(freq = 440, duration = 150) {
-    try {
-      if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
-      const ctx = audioCtxRef.current;
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.type = "sine";
-      o.frequency.value = freq;
-      o.connect(g);
-      g.connect(ctx.destination);
-      o.start();
-      g.gain.setValueAtTime(0.0001, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration / 1000);
-      setTimeout(() => {
-        try { o.stop(); } catch (e) {}
-      }, duration + 20);
-    } catch (e) {
-      // ignore audio errors on unsupported platforms
-    }
-  }
-
-  // JOIN LOBBY & GAME LISTENERS
   useEffect(() => {
     if (!socket || !roomId) return;
-
-    // Ensure we are in the server room (server will avoid duplicates)
     socket.emit("joinRoom", { roomId, username: user.username });
 
-    const handleUpdateLobby = (payload) => {
-      // payload may be array (older) or object { players, host }
+    const uLobby = (payload) => {
       const players = Array.isArray(payload) ? payload : payload?.players || [];
       setLobbyPlayers(players || []);
     };
-
-    socket.on("updateLobby", handleUpdateLobby);
-
-    socket.on("countdown", (seconds) => {
-      setCountdown(seconds);
-      if (seconds === 0) setGameStarted(true);
-    });
+    socket.on("updateLobby", uLobby);
 
     socket.on("startGame", (room) => {
       setHands(room.hands || {});
       setLobbyPlayers(room.players || []);
       setGameStarted(true);
-      setMessage("Game started!");
-      setTurnIndex(room.turnIndex ?? 0);
       setCurrentTurnUsername((room.players || [])[room.turnIndex ?? 0]);
       setSelectedIndex(null);
       setPendingSignal(null);
       setRevealedPlayers([]);
+      setShowGameOver(false);
+      setGameOverInfo(null);
+      playMatchStart();
     });
 
     socket.on("updateGame", (room) => {
       setHands(room.hands || {});
       setLobbyPlayers(room.players || []);
-      setTurnIndex(room.turnIndex ?? 0);
       setCurrentTurnUsername((room.players || [])[room.turnIndex ?? 0]);
-      setSelectedIndex(null);
-
-      // handle lastPass animation data
       if (room.lastPass) {
         setLastPassAnim(room.lastPass);
-        // clear after animation duration so clients stop showing moving card
         setTimeout(() => setLastPassAnim(null), 800);
       } else {
         setLastPassAnim(null);
       }
     });
 
+    // passAnimation should display only card back for everyone
+    socket.on("passAnimation", (data) => {
+      setLastPassAnim(data);
+      // play pass sound
+      playPass();
+      setTimeout(() => setLastPassAnim(null), 800);
+    });
+
+    socket.on("receiveCard", ({ from, to, card }) => {
+      if (to === user.username) {
+        setHands((prev) => {
+          const myHand = prev[user.username] ? [...prev[user.username]] : [];
+          myHand.push(card);
+          return { ...prev, [user.username]: myHand };
+        });
+      }
+    });
+
     socket.on("signalSent", (data) => {
       setPendingSignal(data);
-      // only the ally should see the JACKWHOT button
       if (data && data.ally === user.username) {
         setShowJackwhotLocal(true);
-        // hide after 3s
         setTimeout(() => setShowJackwhotLocal(false), 3000);
       } else {
         setShowJackwhotLocal(false);
       }
+      playSignal();
     });
 
     socket.on("revealCards", ({ target, hands }) => {
-      // reveal target's cards to everyone
-      setRevealedPlayers((prev) => {
-        if (!prev.includes(target)) return [...prev, target];
-        return prev;
-      });
+      setRevealedPlayers((prev) => prev.includes(target) ? prev : [...prev, target]);
       setHands(hands || {});
     });
 
     socket.on("gameOver", (info) => {
       setGameOverInfo(info);
       setShowGameOver(true);
-      // update hands and reveal everybody for the modal
       setHands(info.hands || {});
       setRevealedPlayers(Object.keys(info.hands || {}));
+      if (info.winners && info.winners.includes(user.username)) {
+        setShowConfetti(true);
+        setTimeout(() => setShowConfetti(false), 2500);
+        playMatchEnd();
+      } else {
+        setShowRed(true);
+        setTimeout(() => setShowRed(false), 2000);
+        playJackwhotFalse();
+      }
     });
 
     socket.on("playSound", ({ type }) => {
-      if (type === "suspect") playTone(520, 180);
-      else if (type === "signal") playTone(660, 120);
-      else if (type === "jackwhot-false") playTone(220, 400);
-      else if (type === "matchEnd") playTone(880, 200);
-      else if (type === "kick") playTone(300, 140);
+      // map server sound types to local playback
+      if (type === "suspect") playSuspect();
+      else if (type === "signal") playSignal();
+      else if (type === "jackwhot-false") playJackwhotFalse();
+      else if (type === "matchEnd" || type === "match-end") playMatchEnd();
+      else if (type === "kick") playKick();
+      else if (type === "pass") playPass();
+      else if (type === "matchStart") playMatchStart();
     });
 
-    // global chat can be handled elsewhere; Kemps may show messages if desired
+    socket.on("kicked", () => {
+      window.location.href = "/";
+    });
 
     return () => {
-      socket.off("updateLobby", handleUpdateLobby);
-      socket.off("countdown");
+      socket.off("updateLobby", uLobby);
       socket.off("startGame");
       socket.off("updateGame");
+      socket.off("passAnimation");
+      socket.off("receiveCard");
       socket.off("signalSent");
       socket.off("revealCards");
       socket.off("gameOver");
       socket.off("playSound");
+      socket.off("kicked");
     };
   }, [socket, roomId, user.username]);
 
-  // SELECT / PASS CARD
-  const selectCard = (index) => {
-    if (currentTurnUsername !== user.username) {
-      setMessage("Not your turn ⚠️");
-      return;
-    }
-    setSelectedIndex(index);
-    setMessage("");
+  const selectCard = (i) => {
+    if (currentTurnUsername !== user.username) return;
+    setSelectedIndex(i);
   };
 
   const passCard = () => {
-    if (currentTurnUsername !== user.username) {
-      setMessage("It's not your turn to pass");
-      return;
-    }
-    if (selectedIndex === null) return setMessage("Select a card first ⚠️");
+    if (currentTurnUsername !== user.username) return;
+    if (selectedIndex == null) return;
     socket.emit("passCard", { roomId, fromUsername: user.username, cardIndex: selectedIndex });
     setSelectedIndex(null);
   };
 
-  const signalJackwhot = () => {
-    // always visible but disable quick repeats locally
-    setSignalDisabled(true);
+  const sendSignal = () => {
     socket.emit("sendSignal", { roomId, username: user.username });
-    setTimeout(() => setSignalDisabled(false), 1200);
   };
 
   const callJackwhot = () => {
-    // ally clicks JACKWHOT
-    setShowJackwhotLocal(false);
     socket.emit("callJackwhot", { roomId, callerUsername: user.username });
   };
 
-  const leaveRoom = () => {
-    socket.emit("leaveRoom", { roomId, username: user.username });
-    window.location.href = "/";
-  };
-
-  const openSuspectList = () => {
-    setShowSuspectList((s) => !s);
-  };
-
   const suspectTarget = (target) => {
-    setShowSuspectList(false);
     socket.emit("suspect", { roomId, suspector: user.username, target });
   };
 
   const rematch = () => {
-    // Go back to lobby view (client-side)
-    setShowGameOver(false);
-    setGameOverInfo(null);
-    setGameStarted(false);
-    setRevealedPlayers([]);
-    // navigate to lobby
-    window.location.href = "/lobby";
+    socket.emit("rematch", { roomId, username: user.username });
   };
 
-  // RENDER CARDS
-  const renderCards = (playerUsername, small = false) => {
-    const isYou = playerUsername === user.username;
-    const isRevealed = revealedPlayers.includes(playerUsername);
-    return (
-      <div className="flex gap-1 mt-1">
-        {(hands[playerUsername] || []).map((card, i) => {
-          const clickable = isYou && currentTurnUsername === user.username;
-          return (
-            <div
-              key={i}
-              onClick={() => isYou && selectCard(i)}
-              className={`flex items-center justify-center
-              bg-white text-black border border-black rounded-md select-none
-              ${clickable ? "cursor-pointer" : "cursor-default"}
-              ${small ? "w-8 h-12 text-lg" : "w-10 h-16 text-2xl"}
-              ${isYou && selectedIndex === i ? "ring-2 ring-yellow-400" : ""}`}
-            >
-              {isYou || isRevealed ? CARD_EMOJIS[card] : <div className={`${CARD_BACK_CLASS} w-full h-full rounded`}></div>}
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
+  const isRevealed = (player) => revealedPlayers.includes(player);
+  const myHand = hands[user.username] || [];
 
-  // Determine opponents (for suspect UI)
-  const opponents = lobbyPlayers.filter((p) => p !== user.username && p !== ally);
-
-  // moving card animation overlay (simple)
-  const MovingCard = ({ info }) => {
-    if (!info) return null;
-    // show a small element indicating movement; face shown only to owner
-    const amIFrom = info.from === user.username;
-    const amITo = info.to === user.username;
-    const showFace = amIFrom || amITo || revealedPlayers.includes(info.from) || revealedPlayers.includes(info.to);
-    return (
-      <div className="fixed left-1/2 top-1/2 z-40 pointer-events-none">
-        <div className="animate-pulse bg-white text-green-800 px-2 py-1 rounded shadow">
-          {showFace ? CARD_EMOJIS[info.card] : <div className={`${CARD_BACK_CLASS} w-6 h-8 rounded`}></div>}
-        </div>
-      </div>
-    );
-  };
-
-  // LOBBY VIEW
-  if (!gameStarted) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-green-900 text-white p-4">
-        <h1 className="text-lg font-bold mb-2">Lobby - Room {roomId}</h1>
-        <div className="bg-green-700 p-3 rounded w-80">
-          <p className="text-sm font-semibold mb-1">Players in lobby:</p>
-          {lobbyPlayers.map((p, i) => (
-            <p key={i} className="text-xs">{p}</p>
-          ))}
-        </div>
-
-        {lobbyPlayers.length === 4 && (
-          <p className="mt-2 text-yellow-300 font-bold">
-            Game starting in: {countdown}...
-          </p>
-        )}
-
-        <button
-          onClick={leaveRoom}
-          className="mt-4 bg-red-500 hover:bg-red-600 text-white px-4 py-1 rounded"
-        >
-          Leave Lobby
-        </button>
-      </div>
-    );
-  }
-
-  // GAME VIEW
   return (
-    <div className="min-h-screen bg-green-900 text-white flex flex-col items-center p-2">
-      <MovingCard info={lastPassAnim} />
+    <div className="min-h-screen bg-gradient-to-b from-green-800 to-green-900 text-white pb-24">
+      <ConfettiOverlay show={showConfetti} />
+      <RedOverlay show={showRed} />
+      <CardAnimation event={lastPassAnim} />
 
-      <h1 className="text-lg font-bold">Kemps (Jackwhot)</h1>
-      <p className="text-xs mb-1">Player: {user.username}</p>
-
-      {hands[user.username] && (
-        <div className="relative w-full max-w-sm aspect-square bg-green-700 rounded-lg mt-2">
-
-          <div className="absolute top-1 left-1/2 -translate-x-1/2 text-xs">
-            <p className="text-center">Ally: {ally}</p>
-            {renderCards(ally, true)}
+      <div className="max-w-lg mx-auto px-3 pt-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-3">
+            <Avatar name={user.username} size="sm" />
+            <div>
+              <div className="font-semibold text-base leading-tight">{user.username}</div>
+              <div className="text-xs text-green-200">Turn: <span className="font-medium">{currentTurnUsername || "—"}</span></div>
+            </div>
           </div>
 
-          <div className="absolute left-0 top-1/2 -translate-y-1/2 -rotate-90 text-xs">
-            <p className="text-center">Opp: {enemyLeft}</p>
-            {renderCards(enemyLeft, true)}
-          </div>
-
-          <div className="absolute right-0 top-1/2 -translate-y-1/2 rotate-90 text-xs">
-            <p className="text-center">Opp: {enemyRight}</p>
-            {renderCards(enemyRight, true)}
-          </div>
-
-          <div className="absolute bottom-1 left-1/2 -translate-x-1/2 text-xs">
-            <p className="text-center">You</p>
-            {renderCards(user.username)}
+          <div className="text-right">
+            <div className="text-xs text-green-100">Room: <span className="font-medium">{roomId}</span></div>
           </div>
         </div>
-      )}
 
-      <div className="mt-3 flex flex-col gap-2">
-        <button
-          onClick={passCard}
-          disabled={currentTurnUsername !== user.username}
-          className={`px-4 py-1 rounded text-sm ${currentTurnUsername === user.username ? "bg-white text-green-800" : "bg-zinc-700 text-zinc-300 cursor-not-allowed"}`}
-        >
-          Pass Selected
-        </button>
+        <div className="mb-4">
+          <div className="flex items-center justify-start gap-3 mb-2">
+            <div className="flex items-center gap-2">
+              <div className="text-xs text-green-100">Ally</div>
+            </div>
+          </div>
+          <div className="flex gap-2 overflow-x-auto py-1" data-player-area={ally || ""}>
+            {(hands[ally] || []).map((c, i) => (
+              <div key={i} className="flex-shrink-0">
+                <Card face={c} faceUp={isRevealed(ally)} size="sm" />
+              </div>
+            ))}
+          </div>
+        </div>
 
-        <div className="flex gap-2">
+        <div className="mb-4 grid grid-cols-2 gap-3">
+          {opponents.map((op, idx) => (
+            <div key={op} className="bg-zinc-800 rounded p-2 flex flex-col items-center" data-player-area={op}>
+              <div className="flex items-center gap-2 mb-2">
+                <Avatar name={op} size="sm" />
+                <div className="text-sm font-medium">{op}</div>
+              </div>
+              <div className="flex gap-1 overflow-x-auto">
+                {(hands[op] || []).map((c, i) => (
+                  <div key={i} className="flex-shrink-0">
+                    <Card face={c} faceUp={isRevealed(op)} size="xs" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+          {opponents.length < 2 && <div className="col-span-2 text-center text-xs text-gray-300">Waiting for opponents...</div>}
+        </div>
+
+        <div className="mb-2">
+          <div className="text-sm mb-1">Your Hand</div>
+          <div className="flex gap-2 overflow-x-auto py-2" data-player-area={user.username}>
+            {myHand.map((c, i) => (
+              <div key={i} className="flex-shrink-0" onClick={() => selectCard(i)}>
+                <Card face={c} faceUp={true} size="md" selected={selectedIndex === i} />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="fixed bottom-0 left-0 right-0 p-3 bg-black/60 backdrop-blur-sm border-t border-black/40">
+        <div className="max-w-lg mx-auto flex items-center gap-2">
           <button
-            onClick={signalJackwhot}
-            disabled={signalDisabled}
-            className={`px-3 py-1 rounded text-sm ${signalDisabled ? "bg-yellow-200 text-gray-700 cursor-not-allowed" : "bg-yellow-400 text-black"}`}
+            onClick={passCard}
+            className={`flex-1 rounded py-3 text-sm font-semibold ${currentTurnUsername === user.username ? "bg-emerald-500 text-black" : "bg-zinc-700 text-gray-300"}`}
+            disabled={currentTurnUsername !== user.username}
           >
-            Signal
+            Pass Selected
           </button>
 
-          <button
-            onClick={openSuspectList}
-            className="px-3 py-1 rounded text-sm bg-indigo-600 text-white"
-          >
-            Suspect
-          </button>
+          <button onClick={sendSignal} className="px-3 py-3 rounded bg-yellow-400 text-black text-sm font-semibold">Signal</button>
+
+          <div className="relative">
+            <button className="px-3 py-3 rounded bg-indigo-600 text-white text-sm font-semibold">Suspect</button>
+          </div>
         </div>
 
         {showJackwhotLocal && (
-          <div className="animate-bounce bg-white text-green-800 px-3 py-1 rounded text-sm text-center">
-            <button onClick={callJackwhot} className="font-bold">JACKWHOT!</button>
+          <div className="max-w-lg mx-auto mt-2 text-center">
+            <button onClick={callJackwhot} className="bg-white text-green-800 px-4 py-2 rounded font-bold">JACKWHOT!</button>
           </div>
-        )}
-
-        {showSuspectList && (
-          <div className="bg-zinc-800 p-2 rounded text-xs">
-            <p className="font-semibold mb-1">Suspect which opponent?</p>
-            {opponents.map((o, i) => (
-              <button key={i} onClick={() => suspectTarget(o)} className="block w-full text-left px-2 py-1 hover:bg-zinc-700 rounded">{o}</button>
-            ))}
-            <button onClick={() => setShowSuspectList(false)} className="mt-2 px-2 py-1 rounded bg-red-600">Cancel</button>
-          </div>
-        )}
-
-        {message && (
-          <p className="mt-2 text-xs text-center font-semibold">{message}</p>
         )}
       </div>
 
-      <p className="mt-1 text-xs">
-        Turn: <span className="font-bold">{currentTurnUsername ?? "—"}</span>
-      </p>
-
-      <button
-        onClick={leaveRoom}
-        className="mt-3 bg-red-500 hover:bg-red-600 text-white px-4 py-1 rounded"
-      >
-        Leave Game
-      </button>
-
-      {/* Game over modal */}
       {showGameOver && gameOverInfo && (
-        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="bg-white text-black rounded-lg p-4 w-full max-w-sm">
             <h2 className="text-lg font-bold mb-2">{gameOverInfo.winners.includes(user.username) ? "You Won 🎉" : "You Lose 😞"}</h2>
             <p className="text-sm mb-2">Winning Team: {gameOverInfo.winningTeam}</p>
