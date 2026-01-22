@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import ChatModal from "../component/chatmodal";
+import ChatModal from "../components/ChatModal";
 import ProfileModal from "./ProfileModal";
 
 export default function Navbar({ user, socket, onOpenProfile }) {
