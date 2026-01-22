@@ -1,4 +1,3 @@
-// Full server/index.js with new endpoints & ready handling integrated
 import express from "express";
 import http from "http";
 import path from "path";
@@ -190,6 +189,9 @@ io.on("connection", (socket) => {
       io.to(recipientSocketId).emit("receiveCard", { from: result.from, to: result.to, card: result.card, ts: result.ts });
     }
 
+    // Play pass sound for everyone
+    io.to(roomId).emit("playSound", { type: "pass" });
+
     // Send updated game state to everyone
     io.to(roomId).emit("updateGame", room);
   });
@@ -207,6 +209,7 @@ io.on("connection", (socket) => {
     const room = getRoom(roomId);
     if (!room || !res) return;
 
+    // update in-memory user stats for winners (+10 points, wins++)
     res.winners.forEach((uname) => {
       usersModule.addPoints(uname, 10, true);
     });
@@ -232,6 +235,7 @@ io.on("connection", (socket) => {
     const room = getRoom(roomId);
     if (!room || !res) return;
 
+    // update winners stats
     res.winners.forEach((uname) => {
       usersModule.addPoints(uname, 10, true);
     });
@@ -290,7 +294,9 @@ io.on("connection", (socket) => {
   socket.on("globalChat", ({ username, message }) => {
     const ts = new Date().toISOString();
     const payload = { username, message, ts };
+    // persist to sqlite-backed chat
     chatModule.addMessage(payload);
+    // broadcast to all clients (single source of truth)
     io.emit("globalChatMessage", payload);
   });
 
