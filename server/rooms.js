@@ -1,13 +1,20 @@
+// Full rooms.js with ready map + rematch included
 const rooms = {};
 
 /* =======================
    HELPERS
 ======================= */
+// Deck counts per spec: 5 × Circle, 4 × Square, 4 × Cross, 4 × Heart (total 17)
 function createDeck() {
-  const shapes = ["Circle", "Square", "Triangle", "Cross"];
   const deck = [];
-  shapes.forEach((s) => {
-    for (let i = 0; i < 13; i++) deck.push(s);
+  const counts = {
+    Circle: 5,
+    Square: 4,
+    Cross: 4,
+    Heart: 4,
+  };
+  Object.keys(counts).forEach((shape) => {
+    for (let i = 0; i < counts[shape]; i++) deck.push(shape);
   });
   return deck;
 }
@@ -35,6 +42,7 @@ export function createRoom(roomId) {
     pendingSignal: null, // { signer, ally, expiresAt }
     revealedPlayers: [], // players whose hands are revealed due to suspect
     gameActive: false,
+    ready: {}, // username -> boolean
   };
 }
 
@@ -51,6 +59,7 @@ export function addPlayer(roomId, username) {
 
   if (!room.players.includes(username)) {
     room.players.push(username);
+    room.ready[username] = false;
     // set first joined as host
     if (!room.host) room.host = username;
   }
@@ -62,6 +71,7 @@ export function removePlayer(roomId, username) {
 
   room.players = room.players.filter((p) => p !== username);
   delete room.hands[username];
+  delete room.ready[username];
   if (room.host === username) {
     // pick new host if possible
     room.host = room.players[0] || null;
@@ -69,12 +79,24 @@ export function removePlayer(roomId, username) {
 }
 
 /* =======================
+   READY
+======================= */
+export function setPlayerReady(roomId, username, ready) {
+  const room = rooms[roomId];
+  if (!room) return;
+  room.ready[username] = !!ready;
+}
+
+/* =======================
    START GAME
    Deal ratio: 4,4,4,5 (random player gets 5 and starts)
+   Start allowed only for 2..4 players (host manually starts)
 ======================= */
 export function startCountdown(io, roomId) {
   const room = rooms[roomId];
-  if (!room || room.players.length !== 4 || room.countdown) return;
+  if (!room) return;
+  if (room.players.length < 2 || room.players.length > 4) return; // enforce 2-4 players
+  if (room.countdown) return;
 
   room.countdownValue = 5;
   io.to(roomId).emit("countdown", room.countdownValue);
@@ -92,19 +114,26 @@ export function startCountdown(io, roomId) {
       shuffle(room.deck);
 
       room.hands = {};
-      // choose random player index to get 5 cards
-      const fiveIndex = Math.floor(Math.random() * 4);
+      const playerCount = room.players.length;
+      let fiveIndex = -1;
+      if (playerCount === 4) fiveIndex = Math.floor(Math.random() * 4);
 
       room.players.forEach((p, idx) => {
-        const count = idx === fiveIndex ? 5 : 4;
+        let count = 4;
+        if (playerCount === 4) {
+          count = idx === fiveIndex ? 5 : 4;
+        } else {
+          const base = Math.floor(17 / playerCount);
+          const remainder = 17 % playerCount;
+          count = base + (idx < remainder ? 1 : 0);
+        }
         room.hands[p] = [];
         for (let k = 0; k < count; k++) {
           room.hands[p].push(room.deck.shift());
         }
       });
 
-      // starting player is the one with 5 cards
-      room.turnIndex = fiveIndex;
+      room.turnIndex = fiveIndex >= 0 ? fiveIndex : 0;
       room.gameActive = true;
       room.lastPass = null;
       room.pendingSignal = null;
@@ -116,27 +145,74 @@ export function startCountdown(io, roomId) {
 }
 
 /* =======================
+   rematch: deal again to same players, keep host/room
+======================= */
+export function rematchRoom(io, roomId) {
+  const room = rooms[roomId];
+  if (!room) return null;
+  if (room.players.length < 2) return null;
+
+  // new deck & shuffle
+  room.deck = createDeck();
+  shuffle(room.deck);
+
+  room.hands = {};
+  const playerCount = room.players.length;
+  let fiveIndex = -1;
+  if (playerCount === 4) fiveIndex = Math.floor(Math.random() * 4);
+
+  room.players.forEach((p, idx) => {
+    let count = 4;
+    if (playerCount === 4) {
+      count = idx === fiveIndex ? 5 : 4;
+    } else {
+      const base = Math.floor(17 / playerCount);
+      const remainder = 17 % playerCount;
+      count = base + (idx < remainder ? 1 : 0);
+    }
+    room.hands[p] = [];
+    for (let k = 0; k < count; k++) {
+      room.hands[p].push(room.deck.shift());
+    }
+  });
+
+  room.turnIndex = fiveIndex >= 0 ? fiveIndex : 0;
+  room.gameActive = true;
+  room.lastPass = null;
+  room.pendingSignal = null;
+  room.revealedPlayers = [];
+
+  io.to(roomId).emit("startGame", room);
+  return room;
+}
+
+/* =======================
    GAME LOGIC
    passCard accepts a card index (server enforces turn)
-   Passing is anticlockwise: nextIdx = (turnIndex + 3) % 4
+   Passing is anticlockwise: nextIdx = (turnIndex + playersLen - 1) % playersLen
 ======================= */
 export function passCard(roomId, fromUsername, cardIndex) {
   const room = rooms[roomId];
-  if (!room || !room.gameActive) return;
+  if (!room || !room.gameActive) return null;
 
   const currentPlayer = room.players[room.turnIndex];
-  if (currentPlayer !== fromUsername) return;
+  if (currentPlayer !== fromUsername) return null;
 
   const hand = room.hands[fromUsername];
-  if (!hand || cardIndex == null || cardIndex < 0 || cardIndex >= hand.length) return;
+  if (!hand || cardIndex == null || cardIndex < 0 || cardIndex >= hand.length) return null;
 
   // remove card by index
   const [card] = hand.splice(cardIndex, 1);
 
-  const nextIndex = (room.turnIndex + 3) % 4; // anticlockwise
+  // anticlockwise relative to player order (previous player index)
+  const playerLen = room.players.length;
+  const nextIndex = (room.turnIndex + playerLen - 1) % playerLen; // anticlockwise
   const nextPlayer = room.players[nextIndex];
 
+  // ensure recipient hand exists
+  if (!room.hands[nextPlayer]) room.hands[nextPlayer] = [];
   room.hands[nextPlayer].push(card);
+
   // record lastPass for animation & POV
   room.lastPass = {
     from: fromUsername,
@@ -145,21 +221,26 @@ export function passCard(roomId, fromUsername, cardIndex) {
     ts: Date.now(),
   };
 
+  // advance turn
   room.turnIndex = nextIndex;
+
+  return room.lastPass;
 }
 
 /* =======================
-   SIGNAL FLOW
-   sendSignal sets pending signal that allows ally to call Jackwhot within 3s
+   SIGNAL FLOW (unchanged)
+   sendSignal, callJackwhot, suspectPlayer follow previous logic
+   (copy implementations from earlier file version)
 ======================= */
+
 export function sendSignal(roomId, signerUsername) {
   const room = rooms[roomId];
-  if (!room || room.players.length !== 4 || !room.gameActive) return null;
+  if (!room || room.players.length < 2 || !room.gameActive) return null;
 
   const signerIndex = room.players.indexOf(signerUsername);
   if (signerIndex === -1) return null;
 
-  const allyIndex = (signerIndex + 2) % 4;
+  const allyIndex = (signerIndex + 2) % room.players.length;
   const allyName = room.players[allyIndex];
 
   room.pendingSignal = {
@@ -168,34 +249,24 @@ export function sendSignal(roomId, signerUsername) {
     expiresAt: Date.now() + 3000,
   };
 
-  // Return data for emit
   return { signer: signerUsername, ally: allyName };
 }
 
-/* =======================
-   callJackwhot: ally clicks JACKWHOT within signal window
-   returns { win: boolean, winners: [usernames], winningTeam: "A"|"B" }
-   Team A = indices 0 & 2, Team B = 1 & 3
-======================= */
 export function callJackwhot(roomId, callerUsername) {
   const room = rooms[roomId];
   if (!room || !room.pendingSignal || !room.gameActive) return null;
 
   const { ally, expiresAt } = room.pendingSignal;
-  // ensure caller is the ally and within time
   if (callerUsername !== ally) return null;
   if (Date.now() > expiresAt) {
-    // expired
     room.pendingSignal = null;
     return null;
   }
 
-  const signerIndex = room.players.indexOf(room.pendingSignal.signer);
   const allyIndex = room.players.indexOf(ally);
   const allyHand = room.hands[ally];
   if (!allyHand) return null;
 
-  // Count shapes
   const counts = allyHand.reduce((acc, shape) => {
     acc[shape] = (acc[shape] || 0) + 1;
     return acc;
@@ -207,36 +278,37 @@ export function callJackwhot(roomId, callerUsername) {
   let winningTeam = null;
 
   if (hasFour) {
-    // ally's team wins
-    const teamIndices = allyIndex % 2 === 0 ? [0, 2] : [1, 3];
-    winners = teamIndices.map((i) => room.players[i]);
-    winningTeam = teamIndices[0] % 2 === 0 ? "A" : "B";
+    if (room.players.length >= 4) {
+      const teamIndices = allyIndex % 2 === 0 ? [0, 2] : [1, 3];
+      winners = teamIndices.map((i) => room.players[i]).filter(Boolean);
+      winningTeam = teamIndices[0] % 2 === 0 ? "A" : "B";
+    } else {
+      winners = [ally];
+      winningTeam = "A";
+    }
   } else {
-    // opponents win
-    const oppIndices = allyIndex % 2 === 0 ? [1, 3] : [0, 2];
-    winners = oppIndices.map((i) => room.players[i]);
-    winningTeam = oppIndices[0] % 2 === 0 ? "A" : "B";
+    if (room.players.length >= 4) {
+      const oppIndices = allyIndex % 2 === 0 ? [1, 3] : [0, 2];
+      winners = oppIndices.map((i) => room.players[i]).filter(Boolean);
+      winningTeam = oppIndices[0] % 2 === 0 ? "A" : "B";
+    } else {
+      winners = room.players.filter((p) => p !== ally);
+      winningTeam = "B";
+    }
   }
 
-  // clear pending signal
   room.pendingSignal = null;
-  // game ends
   room.gameActive = false;
 
   return { win: hasFour, winners, winningTeam };
 }
 
-/* =======================
-   Suspect flow:
-   suspector picks a target; target's cards are revealed to everyone then resolved.
-   If target has 4-of-a-kind => suspector's team wins, else target's team wins.
-======================= */
 export function suspectPlayer(roomId, suspector, target) {
   const room = rooms[roomId];
   if (!room || !room.gameActive) return null;
   if (!room.hands[target]) return null;
 
-  room.revealedPlayers.push(target);
+  if (!room.revealedPlayers.includes(target)) room.revealedPlayers.push(target);
 
   const targetHand = room.hands[target];
   const counts = targetHand.reduce((acc, s) => {
@@ -253,15 +325,23 @@ export function suspectPlayer(roomId, suspector, target) {
   const suspectorIndex = room.players.indexOf(suspector);
 
   if (hasFour) {
-    // suspector's team wins
-    const teamIndices = suspectorIndex % 2 === 0 ? [0, 2] : [1, 3];
-    winners = teamIndices.map((i) => room.players[i]);
-    winningTeam = teamIndices[0] % 2 === 0 ? "A" : "B";
+    if (room.players.length >= 4) {
+      const teamIndices = suspectorIndex % 2 === 0 ? [0, 2] : [1, 3];
+      winners = teamIndices.map((i) => room.players[i]).filter(Boolean);
+      winningTeam = teamIndices[0] % 2 === 0 ? "A" : "B";
+    } else {
+      winners = [suspector];
+      winningTeam = "A";
+    }
   } else {
-    // target's team wins
-    const teamIndices = targetIndex % 2 === 0 ? [0, 2] : [1, 3];
-    winners = teamIndices.map((i) => room.players[i]);
-    winningTeam = teamIndices[0] % 2 === 0 ? "A" : "B";
+    if (room.players.length >= 4) {
+      const teamIndices = targetIndex % 2 === 0 ? [0, 2] : [1, 3];
+      winners = teamIndices.map((i) => room.players[i]).filter(Boolean);
+      winningTeam = teamIndices[0] % 2 === 0 ? "A" : "B";
+    } else {
+      winners = [target];
+      winningTeam = "B";
+    }
   }
 
   room.pendingSignal = null;
@@ -298,6 +378,7 @@ export function kickPlayer(roomId, username) {
   if (!room) return;
   room.players = room.players.filter((p) => p !== username);
   delete room.hands[username];
+  delete room.ready[username];
   if (room.host === username) room.host = room.players[0] || null;
 }
 
@@ -316,3 +397,20 @@ export function clearAllCountdowns() {
     }
   });
 }
+
+export default {
+  createRoom,
+  getRoom,
+  addPlayer,
+  removePlayer,
+  setPlayerReady,
+  startCountdown,
+  rematchRoom,
+  passCard,
+  sendSignal,
+  callJackwhot,
+  suspectPlayer,
+  swapPlayers,
+  kickPlayer,
+  clearAllCountdowns,
+};

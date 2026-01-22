@@ -1,3 +1,4 @@
+// Full server/index.js with new endpoints & ready handling integrated
 import express from "express";
 import http from "http";
 import path from "path";
@@ -19,7 +20,11 @@ import {
   swapPlayers,
   kickPlayer,
   clearAllCountdowns,
+  setPlayerReady,
+  rematchRoom,
 } from "./rooms.js";
+import * as usersModule from "./users.js";
+import * as chatModule from "./chat.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,59 +44,58 @@ app.use(limiter);
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 app.use(cors({ origin: CORS_ORIGIN }));
 
-/*
-  Simple in-memory user store (kept intentionally in-memory per your request).
-  Structure:
-    users[username] = { pin: "1234", points: 0, wins: 0 }
-  Note: Pins are stored in plaintext right now — plan to hash & add auth when ready.
-*/
-const users = {};
-
-const PORT = parseInt(process.env.PORT || "3000", 10);
-
-const server = http.createServer(app);
-
-// Single-instance Socket.IO setup (no Redis adapter)
-const io = new Server(server, {
-  cors: { origin: CORS_ORIGIN },
-  pingTimeout: 20000,
-});
-
-console.log("Socket.IO running in single-instance mode (no Redis adapter).");
-
-/* -------------------------
-   HTTP API: Auth & Profile
-   ------------------------- */
+/* ---- Expose users API via usersModule ---- */
 
 // Signup
 app.post("/api/signup", (req, res) => {
   const { username, pin } = req.body;
-  if (!username || !pin) return res.status(400).json({ ok: false, error: "Missing fields" });
-  if (typeof username !== "string" || typeof pin !== "string") return res.status(400).json({ ok: false, error: "Invalid input" });
-  if (username.length < 1) return res.status(400).json({ ok: false, error: "Invalid username" });
-  if (!/^\d{4,}$/.test(pin)) return res.status(400).json({ ok: false, error: "Pin must be at least 4 digits" });
+  try {
+    if (!username || !pin) return res.status(400).json({ ok: false, error: "Missing fields" });
+    if (typeof username !== "string" || typeof pin !== "string") return res.status(400).json({ ok: false, error: "Invalid input" });
+    if (username.length < 1) return res.status(400).json({ ok: false, error: "Invalid username" });
+    if (!/^\d{4,}$/.test(pin)) return res.status(400).json({ ok: false, error: "Pin must be at least 4 digits" });
 
-  if (users[username]) {
-    return res.status(409).json({ ok: false, error: "Username taken" });
+    const user = usersModule.createUser(username, pin);
+    return res.json({ ok: true, user });
+  } catch (err) {
+    if (err.message === "Username taken") return res.status(409).json({ ok: false, error: "Username taken" });
+    return res.status(400).json({ ok: false, error: err.message || "Signup failed" });
   }
-  users[username] = { pin, points: 0, wins: 0 };
-  return res.json({ ok: true, user: { username, points: 0, wins: 0 } });
 });
 
 // Login
 app.post("/api/login", (req, res) => {
   const { username, pin } = req.body;
   if (!username || !pin) return res.status(400).json({ ok: false, error: "Missing fields" });
-  const user = users[username];
-  if (!user || user.pin !== pin) return res.status(401).json({ ok: false, error: "Wrong credentials" });
-  return res.json({ ok: true, user: { username, points: user.points, wins: user.wins } });
+  const user = usersModule.validateUser(username, pin);
+  if (!user) return res.status(401).json({ ok: false, error: "Wrong credentials" });
+  return res.json({ ok: true, user });
 });
 
 // Get profile
 app.get("/api/profile/:username", (req, res) => {
-  const u = users[req.params.username];
+  const u = usersModule.getUser(req.params.username);
   if (!u) return res.status(404).json({ ok: false, error: "User not found" });
-  return res.json({ ok: true, user: { username: req.params.username, points: u.points, wins: u.wins } });
+  return res.json({ ok: true, user: u });
+});
+
+// Leaderboard
+app.get("/api/leaderboard", (req, res) => {
+  const users = usersModule.getAllUsers();
+  // sort by points desc, then wins desc
+  users.sort((a, b) => {
+    if (b.points !== a.points) return b.points - a.points;
+    return b.wins - a.wins;
+  });
+  return res.json({ ok: true, leaderboard: users });
+});
+
+/* ---- Chat endpoints for lazy-load ---- */
+app.get("/api/chat", (req, res) => {
+  const before = req.query.before || null;
+  const limit = parseInt(req.query.limit || "50", 10);
+  const msgs = chatModule.getMessages({ before, limit });
+  return res.json({ ok: true, messages: msgs });
 });
 
 /* ---- Static serving + health ---- */
@@ -115,6 +119,24 @@ app.get("*", (req, res, next) => {
 /* -------------------------
    Socket.IO events (game)
    ------------------------- */
+const PORT = parseInt(process.env.PORT || "3000", 10);
+const server = http.createServer(app);
+
+// Single-instance Socket.IO setup (no Redis adapter)
+const io = new Server(server, {
+  cors: { origin: CORS_ORIGIN },
+  pingTimeout: 20000,
+});
+
+console.log("Socket.IO running in single-instance mode (no Redis adapter).");
+
+// Map username -> socketId for private emits (updated on joinRoom)
+const usernameToSocketId = new Map();
+
+function getSocketIdForUsername(username) {
+  return usernameToSocketId.get(username) || null;
+}
+
 io.on("connection", (socket) => {
   console.log("Socket connected:", socket.id);
 
@@ -123,20 +145,30 @@ io.on("connection", (socket) => {
     if (!getRoom(roomId)) createRoom(roomId);
     socket.join(roomId);
 
+    usernameToSocketId.set(username, socket.id);
+    socket.data.username = username;
+    socket.data.roomId = roomId;
+
     addPlayer(roomId, username);
     const room = getRoom(roomId);
-    io.to(roomId).emit("updateLobby", { players: room.players, host: room.host });
+    io.to(roomId).emit("updateLobby", { players: room.players, host: room.host, ready: room.ready });
 
-    if (room.players.length === 4) {
-      startCountdown(io, roomId);
-    }
+    // do not auto-start on join; host will start
   });
 
   socket.on("leaveRoom", ({ roomId, username }) => {
     if (!roomId || !username) return;
     removePlayer(roomId, username);
     const room = getRoom(roomId);
-    io.to(roomId).emit("updateLobby", { players: room?.players || [], host: room?.host });
+    io.to(roomId).emit("updateLobby", { players: room?.players || [], host: room?.host, ready: room?.ready || {} });
+    if (usernameToSocketId.get(username) === socket.id) usernameToSocketId.delete(username);
+  });
+
+  socket.on("setReady", ({ roomId, username, ready }) => {
+    if (!roomId || !username) return;
+    setPlayerReady(roomId, username, !!ready);
+    const room = getRoom(roomId);
+    io.to(roomId).emit("updateLobby", { players: room.players, host: room.host, ready: room.ready });
   });
 
   socket.on("startGame", ({ roomId }) => {
@@ -145,8 +177,20 @@ io.on("connection", (socket) => {
   });
 
   socket.on("passCard", ({ roomId, fromUsername, cardIndex }) => {
-    passCard(roomId, fromUsername, cardIndex);
+    const result = passCard(roomId, fromUsername, cardIndex);
     const room = getRoom(roomId);
+    if (!room || !result) return;
+
+    // Broadcast pass animation to room (card back only — no face)
+    io.to(roomId).emit("passAnimation", { from: result.from, to: result.to, ts: result.ts });
+
+    // Send private event to recipient with the card face
+    const recipientSocketId = getSocketIdForUsername(result.to);
+    if (recipientSocketId) {
+      io.to(recipientSocketId).emit("receiveCard", { from: result.from, to: result.to, card: result.card, ts: result.ts });
+    }
+
+    // Send updated game state to everyone
     io.to(roomId).emit("updateGame", room);
   });
 
@@ -163,12 +207,8 @@ io.on("connection", (socket) => {
     const room = getRoom(roomId);
     if (!room || !res) return;
 
-    // update in-memory user stats for winners (+10 points, wins++)
     res.winners.forEach((uname) => {
-      if (users[uname]) {
-        users[uname].points += 10;
-        users[uname].wins += 1;
-      }
+      usersModule.addPoints(uname, 10, true);
     });
 
     io.to(roomId).emit("gameOver", {
@@ -184,7 +224,7 @@ io.on("connection", (socket) => {
     room.lastPass = null;
     room.pendingSignal = null;
     room.revealedPlayers = [];
-    io.to(roomId).emit("updateLobby", { players: room.players, host: room.host });
+    io.to(roomId).emit("updateLobby", { players: room.players, host: room.host, ready: room.ready });
   });
 
   socket.on("suspect", ({ roomId, suspector, target }) => {
@@ -192,12 +232,8 @@ io.on("connection", (socket) => {
     const room = getRoom(roomId);
     if (!room || !res) return;
 
-    // update winners stats
     res.winners.forEach((uname) => {
-      if (users[uname]) {
-        users[uname].points += 10;
-        users[uname].wins += 1;
-      }
+      usersModule.addPoints(uname, 10, true);
     });
 
     io.to(roomId).emit("revealCards", { target, hands: room.hands });
@@ -216,30 +252,53 @@ io.on("connection", (socket) => {
     room.lastPass = null;
     room.pendingSignal = null;
     room.revealedPlayers = [];
-    io.to(roomId).emit("updateLobby", { players: room.players, host: room.host });
+    io.to(roomId).emit("updateLobby", { players: room.players, host: room.host, ready: room.ready });
+  });
+
+  socket.on("rematch", ({ roomId, username }) => {
+    const room = getRoom(roomId);
+    if (!room) return;
+    if (!room.players.includes(username)) return;
+    try {
+      rematchRoom(io, roomId);
+      io.to(roomId).emit("playSound", { type: "matchEnd" });
+    } catch (e) {
+      console.warn("rematch error", e);
+    }
   });
 
   socket.on("kickPlayer", ({ roomId, username }) => {
     kickPlayer(roomId, username);
     const room = getRoom(roomId);
-    io.to(roomId).emit("updateLobby", { players: room?.players || [], host: room?.host });
+
+    const kickedSocketId = getSocketIdForUsername(username);
+    if (kickedSocketId) {
+      io.to(kickedSocketId).emit("kicked", { roomId, reason: "You were kicked from the lobby" });
+      usernameToSocketId.delete(username);
+    }
+
+    io.to(roomId).emit("updateLobby", { players: room?.players || [], host: room?.host, ready: room?.ready || {} });
     io.to(roomId).emit("playSound", { type: "kick" });
   });
 
   socket.on("swapPlayers", ({ roomId, indexA, indexB }) => {
     swapPlayers(roomId, indexA, indexB);
     const room = getRoom(roomId);
-    io.to(roomId).emit("updateLobby", { players: room?.players || [], host: room?.host });
+    io.to(roomId).emit("updateLobby", { players: room?.players || [], host: room?.host, ready: room?.ready || {} });
   });
 
   socket.on("globalChat", ({ username, message }) => {
     const ts = new Date().toISOString();
-    io.emit("globalChatMessage", { username, message, ts });
+    const payload = { username, message, ts };
+    chatModule.addMessage(payload);
+    io.emit("globalChatMessage", payload);
   });
 
   socket.on("disconnect", () => {
     console.log("Socket disconnected:", socket.id);
-    // No automatic user removal here — lobby removal is driven by clients calling leaveRoom
+    for (const [uname, sid] of usernameToSocketId.entries()) {
+      if (sid === socket.id) usernameToSocketId.delete(uname);
+    }
   });
 });
 
