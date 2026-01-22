@@ -3,7 +3,8 @@ import path from "path";
 import Database from "better-sqlite3";
 
 // Use environment variable if available, else default to relative path
-const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), "data", "app.sqlite");
+const DB_PATH = path.join(process.cwd(), "data", "app.sqlite");
+
 
 // Ensure the folder exists
 const folder = path.dirname(DB_PATH);
