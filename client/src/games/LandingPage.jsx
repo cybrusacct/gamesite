@@ -59,7 +59,7 @@ export default function LandingPage({ user, socket }) {
 
       {/* Footer */}
       <footer className="mt-auto text-xs sm:text-sm text-gray-300 mb-4">
-        &copy; 2026 GameSite. All rights reserved.
+        &copy; 2026 Cybrus. All rights reserved.
       </footer>
 
       {showProfile && <ProfileModal username={user.username} onClose={() => setShowProfile(false)} />}

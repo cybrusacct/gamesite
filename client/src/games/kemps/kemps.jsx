@@ -1,253 +1,169 @@
-import React, { useState, useEffect } from "react";
-import Card from "../../components/Card";
-import CardAnimation from "../../components/CardAnimation";
-import Avatar from "../../components/Avatar";
-import ConfettiOverlay from "../../components/ConfettiOverlay";
-import RedOverlay from "../../components/RedOverlay";
-import useSocket from "../../hooks/useSocket";
-import { playPass } from "../../utils/sounds";
+import React, { useEffect, useState, useRef } from "react";
 
 /*
-  Classic Kemps board layout:
-   - big centered green board
-   - ally row top (backs)
-   - left/right opponents vertical stacks (backs)
-   - player hand at bottom (faces)
+  Global chat (robust):
+  - fetch latest messages on mount
+  - subscribe to socket events and merge incoming messages
+  - dedupe by (username + ts + message)
+  - auto-scroll to bottom after fetch and on new messages
 */
 
-export default function Kemps({ user, socket: socketProp, roomId }) {
-  const socket = socketProp || useSocket();
+const API_CHAT = "/api/chat?limit=50";
 
-  const [hands, setHands] = useState({});
-  const [selectedIndex, setSelectedIndex] = useState(null);
-  const [lobbyPlayers, setLobbyPlayers] = useState([]);
-  const [currentTurnUsername, setCurrentTurnUsername] = useState(null);
-  const [gameStarted, setGameStarted] = useState(false);
-  const [revealedPlayers, setRevealedPlayers] = useState([]);
-  const [lastPassAnim, setLastPassAnim] = useState(null);
-  const [showConfetti, setShowConfetti] = useState(false);
-  const [showRed, setShowRed] = useState(false);
-  const [gameOverInfo, setGameOverInfo] = useState(null);
-  const [showGameOver, setShowGameOver] = useState(false);
+function dedupeMessages(existing, incoming) {
+  const map = new Map();
+  existing.forEach((m) => {
+    map.set(`${m.username}|${m.ts}|${m.message}`, m);
+  });
+  incoming.forEach((m) => {
+    map.set(`${m.username}|${m.ts}|${m.message}`, m);
+  });
+  // return sorted by timestamp ascending
+  const arr = Array.from(map.values());
+  arr.sort((a, b) => new Date(a.ts) - new Date(b.ts));
+  return arr;
+}
 
-  // compute positions robustly even if players missing
-  const myIndex = lobbyPlayers.indexOf(user?.username);
-  const ally = myIndex >= 0 && lobbyPlayers.length > 0 ? lobbyPlayers[(myIndex + 2) % lobbyPlayers.length] : null;
-  const enemyLeft = myIndex >= 0 && lobbyPlayers.length > 0 ? lobbyPlayers[(myIndex + (lobbyPlayers.length - 1)) % lobbyPlayers.length] : null;
-  const enemyRight = myIndex >= 0 && lobbyPlayers.length > 0 ? lobbyPlayers[(myIndex + 1) % lobbyPlayers.length] : null;
+export default function ChatModal({ socket, username, onClose }) {
+  const [messages, setMessages] = useState([]);
+  const [text, setText] = useState("");
+  const listRef = useRef(null);
+  const loadingRef = useRef(false);
+  const oldestTsRef = useRef(null);
 
-  // ensure Card component uses same faces as server (server: Circle, Square, Cross, Heart)
   useEffect(() => {
-    if (!socket || !roomId) return;
-    // join on mount
-    socket.emit("joinRoom", { roomId, username: user.username });
+    if (!socket) return;
+    let mounted = true;
 
-    const handleUpdateLobby = (payload) => {
-      const players = Array.isArray(payload) ? payload : payload?.players || [];
-      setLobbyPlayers(players || []);
+    // subscribe first so we don't miss incoming messages during fetch
+    const handler = (msg) => {
+      setMessages((prev) => {
+        const merged = dedupeMessages(prev, [msg]);
+        // update oldestTsRef if needed
+        if (!oldestTsRef.current && merged.length > 0) oldestTsRef.current = merged[0].ts;
+        // auto-scroll
+        setTimeout(() => {
+          if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+        }, 30);
+        return merged;
+      });
+      // small sound on receive
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.frequency.value = 880;
+        o.connect(g);
+        g.connect(ctx.destination);
+        o.start();
+        g.gain.setValueAtTime(0.0001, ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.1, ctx.currentTime + 0.01);
+        setTimeout(() => { try { o.stop(); } catch (e) {} }, 80);
+      } catch (e) {}
     };
-    socket.on("updateLobby", handleUpdateLobby);
 
-    socket.on("startGame", (room) => {
-      // server sends full room with hands and players
-      const rplayers = room?.players || [];
-      setLobbyPlayers(rplayers);
-      setHands(room?.hands || {});
-      setGameStarted(true);
-      setCurrentTurnUsername(rplayers[room?.turnIndex ?? 0] || null);
-      setRevealedPlayers(room?.revealedPlayers || []);
-      setShowGameOver(false);
-      setGameOverInfo(null);
-    });
+    socket.on("globalChatMessage", handler);
 
-    socket.on("updateGame", (room) => {
-      // update hands and turn
-      setHands(room?.hands || {});
-      setLobbyPlayers(room?.players || []);
-      setCurrentTurnUsername((room?.players || [])[room?.turnIndex ?? 0] || null);
+    // fetch latest messages
+    fetch(API_CHAT)
+      .then((r) => r.json())
+      .then((data) => {
+        if (!mounted) return;
+        if (data.ok && Array.isArray(data.messages)) {
+          // dedupe merge in case socket received messages during fetch
+          setMessages((prev) => {
+            const merged = dedupeMessages(prev, data.messages);
+            if (merged.length > 0) oldestTsRef.current = merged[0].ts;
+            return merged;
+          });
+          // scroll to bottom
+          setTimeout(() => {
+            if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+          }, 50);
+        }
+      })
+      .catch(() => {})
+      .finally(() => { /* nothing */ });
 
-      // last pass animation handling
-      if (room?.lastPass) {
-        setLastPassAnim(room.lastPass);
-        setTimeout(() => setLastPassAnim(null), 800);
-      } else {
-        setLastPassAnim(null);
-      }
-    });
-
-    // passAnimation (card-back visible to all)
-    socket.on("passAnimation", (data) => {
-      setLastPassAnim(data);
-      playPass();
-      setTimeout(() => setLastPassAnim(null), 800);
-    });
-
-    socket.on("revealCards", ({ target, hands: newHands }) => {
-      setRevealedPlayers((prev) => (prev.includes(target) ? prev : [...prev, target]));
-      if (newHands) setHands(newHands);
-    });
-
-    socket.on("gameOver", (info) => {
-      setGameOverInfo(info);
-      setShowGameOver(true);
-      setHands(info.hands || {});
-      setRevealedPlayers(Object.keys(info.hands || {}));
-      if (info.winners && info.winners.includes(user.username)) {
-        setShowConfetti(true);
-        setTimeout(() => setShowConfetti(false), 2400);
-      } else {
-        setShowRed(true);
-        setTimeout(() => setShowRed(false), 2000);
-      }
-    });
-
-    // cleanup listeners on unmount
     return () => {
-      socket.off("updateLobby", handleUpdateLobby);
-      socket.off("startGame");
-      socket.off("updateGame");
-      socket.off("passAnimation");
-      socket.off("revealCards");
-      socket.off("gameOver");
+      mounted = false;
+      socket.off("globalChatMessage", handler);
     };
-  }, [socket, roomId, user.username]);
+  }, [socket]);
 
-  const selectCard = (index) => {
-    if (currentTurnUsername !== user.username) return;
-    setSelectedIndex(index);
+  // lazy-load older on scroll-to-top
+  const onScroll = () => {
+    if (!listRef.current || loadingRef.current) return;
+    if (listRef.current.scrollTop < 80) {
+      loadingRef.current = true;
+      const before = oldestTsRef.current;
+      if (!before) {
+        loadingRef.current = false;
+        return;
+      }
+      fetch(`/api/chat?before=${encodeURIComponent(before)}&limit=50`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.ok && Array.isArray(data.messages) && data.messages.length > 0) {
+            setMessages((prev) => {
+              const merged = dedupeMessages(data.messages, prev);
+              if (merged.length > 0) oldestTsRef.current = merged[0].ts;
+              return merged;
+            });
+            // preserve scroll rough position
+            setTimeout(() => {
+              if (listRef.current) listRef.current.scrollTop = 200;
+            }, 60);
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          loadingRef.current = false;
+        });
+    }
   };
 
-  const passCard = () => {
-    if (currentTurnUsername !== user.username) return;
-    if (selectedIndex == null) return;
-    socket.emit("passCard", { roomId, fromUsername: user.username, cardIndex: selectedIndex });
-    setSelectedIndex(null);
+  const send = () => {
+    if (!text.trim()) return;
+    const ts = new Date().toISOString();
+    const payload = { username, message: text.trim(), ts };
+    if (socket) socket.emit("globalChat", payload);
+    // Do NOT push locally — server broadcast will arrive and merge
+    setText("");
+    setTimeout(() => {
+      if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+    }, 50);
   };
 
-  const signal = () => {
-    socket.emit("sendSignal", { roomId, username: user.username });
-  };
-
-  const callJack = () => {
-    socket.emit("callJackwhot", { roomId, callerUsername: user.username });
-  };
-
-  const openSuspect = (target) => {
-    socket.emit("suspect", { roomId, suspector: user.username, target });
-  };
-
-  // helper safe access
-  const safeHand = (uname) => (hands && hands[uname]) ? hands[uname] : [];
-
-  // render a face-up card (you) or back for opponents/ally (unless revealed)
-  const renderPlayerCards = (playerUsername, small = false) => {
-    const isYou = playerUsername === user.username;
-    const isRevealed = revealedPlayers.includes(playerUsername);
-    const cards = safeHand(playerUsername);
-    const size = small ? "sm" : "md";
-    return (
-      <div className={`flex ${small ? "gap-2" : "gap-3"} items-center`}>
-        {cards.map((card, i) => {
-          const faceUp = isYou || isRevealed;
-          return (
-            <div key={`${playerUsername}-${i}`} style={{ cursor: isYou ? "pointer" : "default" }} onClick={() => isYou && selectCard(i)}>
-              <Card face={card} faceUp={faceUp} size={small ? "sm" : "md"} selected={isYou && selectedIndex === i} />
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
-
-  // top header + board container
   return (
-    <div className="min-h-screen bg-green-900 text-white flex flex-col items-center px-2 py-4">
-      <ConfettiOverlay show={showConfetti} />
-      <RedOverlay show={showRed} />
-      <CardAnimation event={lastPassAnim} />
-
-      <div className="text-center mb-2">
-        <h1 className="text-xl font-bold">Kemps (Jackwhot)</h1>
-        <div className="text-xs">Player: {user.username}</div>
-      </div>
-
-      {/* centered big board */}
-      <div className="relative w-full max-w-3xl bg-green-700 rounded-xl p-6">
-        {/* Ally row at top */}
-        <div className="flex flex-col items-center mb-6">
-          <div className="text-sm mb-2">Ally: {ally}</div>
-          <div className="bg-green-600 rounded px-4 py-4 w-full flex justify-center" data-player-area={ally || ""}>
-            {/* show backs for ally (or faces if revealed) */}
-            {renderPlayerCards(ally, true)}
-          </div>
+    <div className="fixed inset-0 z-50 flex items-end justify-center p-4">
+      <div className="bg-white text-black rounded-lg w-full max-w-md shadow-lg flex flex-col">
+        <div className="p-3 flex items-center justify-between border-b">
+          <div className="font-semibold">Global Chat</div>
+          <button onClick={onClose} className="text-sm text-gray-600">Close</button>
         </div>
 
-        {/* Middle: left & right opponents */}
-        <div className="flex justify-between items-start">
-          {/* left opponent vertical */}
-          <div className="flex flex-col items-center space-y-2" data-player-area={enemyLeft || ""}>
-            <div className="text-xs transform -rotate-90 whitespace-nowrap">{enemyLeft || ""}</div>
-            <div className="flex flex-col gap-2">
-              {(safeHand(enemyLeft) || []).map((_, i) => (
-                <div key={`L-${i}`} className="w-10 h-16">
-                  <Card face={null} faceUp={false} size="sm" />
+        <div ref={listRef} onScroll={onScroll} className="p-3 overflow-auto flex-1 space-y-2" style={{ maxHeight: "50vh" }}>
+          {messages.map((m, i) => {
+            const isMe = m.username === username;
+            const align = isMe ? "justify-end" : "justify-start";
+            const bubble = isMe ? "bg-emerald-500 text-white" : "bg-zinc-200 text-black";
+            return (
+              <div key={`${m.username}-${m.ts}-${i}`} className={`flex ${align}`}>
+                <div className={`rounded-lg px-3 py-2 ${bubble} max-w-[80%]`}>
+                  <div className="text-xs font-semibold">{m.username} <span className="text-[10px] text-gray-700">{new Date(m.ts).toLocaleTimeString()}</span></div>
+                  <div className="text-sm">{m.message}</div>
                 </div>
-              ))}
-            </div>
-          </div>
-
-          {/* center empty play area (visual) */}
-          <div className="flex-1 mx-6 min-h-[220px] rounded-lg border-0"></div>
-
-          {/* right opponent vertical */}
-          <div className="flex flex-col items-center space-y-2" data-player-area={enemyRight || ""}>
-            <div className="text-xs transform rotate-90 whitespace-nowrap">{enemyRight || ""}</div>
-            <div className="flex flex-col gap-2">
-              {(safeHand(enemyRight) || []).map((_, i) => (
-                <div key={`R-${i}`} className="w-10 h-16">
-                  <Card face={null} faceUp={false} size="sm" />
-                </div>
-              ))}
-            </div>
-          </div>
+              </div>
+            );
+          })}
         </div>
 
-        {/* Bottom: your hand */}
-        <div className="mt-6 flex flex-col items-center">
-          <div className="text-sm mb-2">You</div>
-          <div className="flex gap-3 justify-center" data-player-area={user.username}>
-            {renderPlayerCards(user.username, false)}
-          </div>
+        <div className="p-2 border-t flex gap-2">
+          <input value={text} onChange={(e) => setText(e.target.value)} className="flex-1 p-2 rounded bg-zinc-100" placeholder="Say something..." />
+          <button onClick={send} className="bg-emerald-500 text-white px-3 py-1 rounded">Send</button>
         </div>
       </div>
-
-      {/* controls */}
-      <div className="mt-4 flex gap-3">
-        <button onClick={passCard} disabled={currentTurnUsername !== user.username} className={`px-4 py-2 rounded ${currentTurnUsername === user.username ? "bg-white text-green-800" : "bg-zinc-700 text-zinc-300"}`}>Pass Selected</button>
-        <button onClick={signal} className="px-3 py-2 rounded bg-yellow-400 text-black">Signal</button>
-        <div className="relative">
-          <button className="px-3 py-2 rounded bg-indigo-600 text-white">Suspect</button>
-        </div>
-      </div>
-
-      {/* small turn info */}
-      <div className="mt-2 text-xs">Turn: <span className="font-bold">{currentTurnUsername ?? "—"}</span></div>
-
-      {/* Game over modal */}
-      {showGameOver && gameOverInfo && (
-        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
-          <div className="bg-white text-black rounded-lg p-4 w-full max-w-sm">
-            <h2 className="text-lg font-bold mb-2">{gameOverInfo.winners.includes(user.username) ? "You Won 🎉" : "You Lose 😞"}</h2>
-            <p className="text-sm mb-2">Winning Team: {gameOverInfo.winningTeam}</p>
-            <p className="text-sm mb-2">Winners: {gameOverInfo.winners.join(", ")}</p>
-
-            <div className="mt-2 flex gap-2">
-              <button onClick={() => { socket.emit("rematch", { roomId, username: user.username }); setShowGameOver(false);} } className="flex-1 bg-emerald-500 text-white px-3 py-1 rounded">Rematch</button>
-              <button onClick={() => { setShowGameOver(false); window.location.href = "/"; }} className="flex-1 bg-gray-700 text-white px-3 py-1 rounded">Exit</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
