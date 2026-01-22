@@ -1,13 +1,28 @@
 import React, { useEffect, useState, useRef } from "react";
 
 /*
-  Simple global chat with lazy-load: loads latest messages on mount,
-  fetches older messages when user scrolls to top.
-
-  Fix: Don't locally push the message when sending; rely on server broadcast
-  to avoid duplicate messages in the client.
+  Global chat (robust):
+  - fetch latest messages on mount
+  - subscribe to socket events and merge incoming messages
+  - dedupe by (username + ts + message)
+  - auto-scroll to bottom after fetch and on new messages
 */
+
 const API_CHAT = "/api/chat?limit=50";
+
+function dedupeMessages(existing, incoming) {
+  const map = new Map();
+  existing.forEach((m) => {
+    map.set(`${m.username}|${m.ts}|${m.message}`, m);
+  });
+  incoming.forEach((m) => {
+    map.set(`${m.username}|${m.ts}|${m.message}`, m);
+  });
+  // return sorted by timestamp ascending
+  const arr = Array.from(map.values());
+  arr.sort((a, b) => new Date(a.ts) - new Date(b.ts));
+  return arr;
+}
 
 export default function ChatModal({ socket, username, onClose }) {
   const [messages, setMessages] = useState([]);
@@ -18,24 +33,21 @@ export default function ChatModal({ socket, username, onClose }) {
 
   useEffect(() => {
     if (!socket) return;
+    let mounted = true;
 
-    // subscribe to real-time messages
+    // subscribe first so we don't miss incoming messages during fetch
     const handler = (msg) => {
-      setMessages((m) => {
-        // prevent duplicates by checking last message
-        const last = m.length ? m[m.length - 1] : null;
-        if (last && last.ts === msg.ts && last.username === msg.username && last.message === msg.message) {
-          return m;
-        }
-        return [...m, msg];
+      setMessages((prev) => {
+        const merged = dedupeMessages(prev, [msg]);
+        // update oldestTsRef if needed
+        if (!oldestTsRef.current && merged.length > 0) oldestTsRef.current = merged[0].ts;
+        // auto-scroll
+        setTimeout(() => {
+          if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+        }, 30);
+        return merged;
       });
-      // update oldestTs if null
-      if (!oldestTsRef.current && msg.ts) oldestTsRef.current = msg.ts;
-      // auto-scroll to bottom for new messages
-      if (listRef.current) {
-        listRef.current.scrollTop = listRef.current.scrollHeight;
-      }
-      // small sound on receive - optional: keep small tone here
+      // small sound on receive
       try {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
         const o = ctx.createOscillator();
@@ -51,33 +63,38 @@ export default function ChatModal({ socket, username, onClose }) {
     };
 
     socket.on("globalChatMessage", handler);
-    return () => socket.off("globalChatMessage", handler);
-  }, [socket]);
 
-  useEffect(() => {
-    // load latest messages on mount
+    // fetch latest messages
     fetch(API_CHAT)
       .then((r) => r.json())
       .then((data) => {
+        if (!mounted) return;
         if (data.ok && Array.isArray(data.messages)) {
-          setMessages(data.messages);
-          if (data.messages.length > 0) {
-            oldestTsRef.current = data.messages[0].ts;
-          }
-          // scroll to bottom after a tick
+          // dedupe merge in case socket received messages during fetch
+          setMessages((prev) => {
+            const merged = dedupeMessages(prev, data.messages);
+            if (merged.length > 0) oldestTsRef.current = merged[0].ts;
+            return merged;
+          });
+          // scroll to bottom
           setTimeout(() => {
             if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
           }, 50);
         }
       })
-      .catch(() => {});
-  }, []);
+      .catch(() => {})
+      .finally(() => { /* nothing */ });
 
-  // scroll handler for lazy load older messages
-  const onScroll = (e) => {
+    return () => {
+      mounted = false;
+      socket.off("globalChatMessage", handler);
+    };
+  }, [socket]);
+
+  // lazy-load older on scroll-to-top
+  const onScroll = () => {
     if (!listRef.current || loadingRef.current) return;
     if (listRef.current.scrollTop < 80) {
-      // load older messages before oldestTsRef
       loadingRef.current = true;
       const before = oldestTsRef.current;
       if (!before) {
@@ -88,12 +105,15 @@ export default function ChatModal({ socket, username, onClose }) {
         .then((r) => r.json())
         .then((data) => {
           if (data.ok && Array.isArray(data.messages) && data.messages.length > 0) {
-            setMessages((prev) => [...data.messages, ...prev]);
-            oldestTsRef.current = data.messages[0].ts;
-            // keep scroll position stable (approx)
+            setMessages((prev) => {
+              const merged = dedupeMessages(data.messages, prev);
+              if (merged.length > 0) oldestTsRef.current = merged[0].ts;
+              return merged;
+            });
+            // preserve scroll rough position
             setTimeout(() => {
               if (listRef.current) listRef.current.scrollTop = 200;
-            }, 50);
+            }, 60);
           }
         })
         .catch(() => {})
@@ -108,10 +128,11 @@ export default function ChatModal({ socket, username, onClose }) {
     const ts = new Date().toISOString();
     const payload = { username, message: text.trim(), ts };
     if (socket) socket.emit("globalChat", payload);
-    // DO NOT locally push: server will broadcast via globalChatMessage and client will append once
+    // Do NOT push locally — server broadcast will arrive and merge
     setText("");
-    // keep input focus
-    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+    setTimeout(() => {
+      if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+    }, 50);
   };
 
   return (
@@ -122,18 +143,13 @@ export default function ChatModal({ socket, username, onClose }) {
           <button onClick={onClose} className="text-sm text-gray-600">Close</button>
         </div>
 
-        <div
-          ref={listRef}
-          onScroll={onScroll}
-          className="p-3 overflow-auto flex-1 space-y-2"
-          style={{ maxHeight: "50vh" }}
-        >
+        <div ref={listRef} onScroll={onScroll} className="p-3 overflow-auto flex-1 space-y-2" style={{ maxHeight: "50vh" }}>
           {messages.map((m, i) => {
             const isMe = m.username === username;
             const align = isMe ? "justify-end" : "justify-start";
             const bubble = isMe ? "bg-emerald-500 text-white" : "bg-zinc-200 text-black";
             return (
-              <div key={i} className={`flex ${align}`}>
+              <div key={`${m.username}-${m.ts}-${i}`} className={`flex ${align}`}>
                 <div className={`rounded-lg px-3 py-2 ${bubble} max-w-[80%]`}>
                   <div className="text-xs font-semibold">{m.username} <span className="text-[10px] text-gray-700">{new Date(m.ts).toLocaleTimeString()}</span></div>
                   <div className="text-sm">{m.message}</div>
