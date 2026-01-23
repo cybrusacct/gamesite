@@ -1,193 +1,101 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import Avatar from "../../components/Avatar";
 import useSocket from "../../hooks/useSocket";
 
 /*
-  Lobby component (updated):
-  - emits joinRoom on mount (already)
-  - immediately issues rejoinRoom to request canonical snapshot (prevents missed start/update)
-  - listens for updateLobby, updateGame, startGame, countdown
-  - navigates to /kemps when server signals gameActive or sends startGame
-  - logs incoming updateGame/startGame (debug)
+  JoinGame:
+  - Shared socket via useSocket hook
+  - Create or Join a room by entering code
+  - Displays current lobby players + countdown (server-provided)
+  - Calls onJoin({ socket, roomId, role }) so parent keeps same socket/room info
 */
 
-export default function Lobby({ user, socket: socketProp, roomId, role }) {
-  const socket = socketProp || useSocket();
+export default function JoinGame({ user, onJoin }) {
+  const socket = useSocket();
+  const [createRoomId, setCreateRoomId] = useState("");
+  const [joinRoomId, setJoinRoomId] = useState("");
   const [players, setPlayers] = useState([]);
-  const [host, setHost] = useState(null);
-  const [readyMap, setReadyMap] = useState({});
-  const [swapA, setSwapA] = useState("");
-  const [swapB, setSwapB] = useState("");
   const [countdown, setCountdown] = useState(null);
+  const [error, setError] = useState("");
   const navigate = useNavigate();
 
   useEffect(() => {
     if (!socket) return;
 
-    // join room (server idempotent)
-    socket.emit("joinRoom", { roomId, username: user.username });
-
-    // Immediately ask server for full canonical snapshot / sync to avoid races
-    // This will cause server to emit updateGame + syncHand for this socket
-    socket.emit("rejoinRoom", { roomId, username: user.username });
-
-    const onUpdateLobby = (payload) => {
-      const playerList = Array.isArray(payload) ? payload : payload?.players || [];
-      const hostUser = Array.isArray(payload) ? null : payload?.host || null;
-      setPlayers(playerList);
-      setHost(hostUser);
-      setReadyMap((payload && payload.ready) || {});
+    const handleUpdateLobby = (payload) => {
+      const arr = Array.isArray(payload) ? payload : payload?.players || [];
+      setPlayers(arr || []);
     };
-    socket.on("updateLobby", onUpdateLobby);
-
-    const onUpdateGame = (snapshot) => {
-      console.debug("Lobby received updateGame", snapshot);
-      if (!snapshot) return;
-      // navigate when server says gameActive
-      if (snapshot.gameActive) {
-        navigate("/kemps");
-      }
+    const handleCountdown = (s) => {
+      setCountdown(s);
     };
-    socket.on("updateGame", onUpdateGame);
 
-    // server-driven explicit start signal (also used to navigate)
-    const onStartGame = (snapshot) => {
-      console.debug("Lobby received startGame", snapshot);
-      navigate("/kemps");
-    };
-    socket.on("startGame", onStartGame);
-
-    // countdown updates (for UI)
-    const onCountdown = (secs) => setCountdown(secs);
-    socket.on("countdown", onCountdown);
-
-    socket.on("kicked", () => {
-      navigate("/");
-    });
+    socket.on("updateLobby", handleUpdateLobby);
+    socket.on("countdown", handleCountdown);
 
     return () => {
-      socket.off("updateLobby", onUpdateLobby);
-      socket.off("updateGame", onUpdateGame);
-      socket.off("startGame", onStartGame);
-      socket.off("countdown", onCountdown);
-      socket.off("kicked");
+      socket.off("updateLobby", handleUpdateLobby);
+      socket.off("countdown", handleCountdown);
     };
-  }, [socket, roomId, user.username, navigate]);
+  }, [socket]);
 
-  const leaveRoom = () => {
-    socket.emit("leaveRoom", { roomId, username: user.username });
-    navigate("/");
+  const handleCreate = () => {
+    setError("");
+    if (!createRoomId) return setError("Enter a room ID to create");
+    if (!socket) return setError("No socket connection");
+    socket.emit("joinRoom", { roomId: createRoomId, username: user.username });
+    onJoin({ socket, roomId: createRoomId, role: "You" });
+    navigate("/lobby");
   };
 
-  const isHost = host === user.username;
-
-  const handleKick = (target) => {
-    if (!isHost) return;
-    socket.emit("kickPlayer", { roomId, username: target });
-  };
-
-  const toggleReady = () => {
-    const newReady = !Boolean(readyMap[user.username]);
-    socket.emit("setReady", { roomId, username: user.username, ready: newReady });
-    setReadyMap((m) => ({ ...m, [user.username]: newReady }));
-  };
-
-  const handleSwap = () => {
-    if (!isHost) return;
-    const indexA = players.indexOf(swapA);
-    const indexB = players.indexOf(swapB);
-    if (indexA === -1 || indexB === -1) return;
-    socket.emit("swapPlayers", { roomId, indexA, indexB });
-    setSwapA("");
-    setSwapB("");
-  };
-
-  const handleManualStart = () => {
-    if (!isHost) return;
-    if (players.length >= 2 && players.length <= 4) {
-      socket.emit("startGame", { roomId });
-    }
+  const handleJoin = () => {
+    setError("");
+    if (!joinRoomId) return setError("Enter a room ID to join");
+    if (!socket) return setError("No socket connection");
+    socket.emit("joinRoom", { roomId: joinRoomId, username: user.username });
+    onJoin({ socket, roomId: joinRoomId, role: "You" });
+    navigate("/lobby");
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-start bg-linear-to-br from-purple-700 to-indigo-900 text-white p-4">
-      <div className="w-full max-w-md">
-        <h1 className="text-2xl font-bold mb-4 text-center">Lobby: {roomId}</h1>
-
-        <div className="bg-zinc-900 p-3 rounded-lg mb-4 space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="font-semibold">Players ({players.length}/4)</div>
-            <div className="text-xs text-gray-300">Host: <span className="font-medium">{host}</span></div>
-          </div>
-
-          {/* Team A (indices 0,2) top row */}
-          <div className="flex gap-2 items-center justify-start flex-wrap">
-            {players.map((p, i) => {
-              if (i % 2 === 0) {
-                return (
-                  <div key={p} className="flex items-center gap-2 bg-zinc-800 p-2 rounded">
-                    <Avatar name={p} size="sm" />
-                    <div className="text-sm">
-                      <div className="font-semibold">{p} {host === p && <span className="text-xs bg-yellow-400 text-black px-1 rounded ml-1">HOST</span>}</div>
-                      <div className="text-xs text-gray-300">{readyMap[p] ? <span className="text-emerald-300">Ready</span> : <span className="text-gray-400">Not ready</span>}</div>
-                    </div>
-                    {isHost && p !== user.username && <button onClick={() => handleKick(p)} className="ml-2 bg-red-500 px-2 py-1 rounded text-xs">Kick</button>}
-                  </div>
-                );
-              }
-              return null;
-            })}
-          </div>
-
-          {/* Team B (indices 1,3) bottom row */}
-          <div className="mt-2 flex gap-2 items-center justify-start flex-wrap">
-            {players.map((p, i) => {
-              if (i % 2 === 1) {
-                return (
-                  <div key={p} className="flex items-center gap-2 bg-zinc-800 p-2 rounded">
-                    <Avatar name={p} size="sm" />
-                    <div className="text-sm">
-                      <div className="font-semibold">{p} {host === p && <span className="text-xs bg-yellow-400 text-black px-1 rounded ml-1">HOST</span>}</div>
-                      <div className="text-xs text-gray-300">{readyMap[p] ? <span className="text-emerald-300">Ready</span> : <span className="text-gray-400">Not ready</span>}</div>
-                    </div>
-                    {isHost && p !== user.username && <button onClick={() => handleKick(p)} className="ml-2 bg-red-500 px-2 py-1 rounded text-xs">Kick</button>}
-                  </div>
-                );
-              }
-              return null;
-            })}
-          </div>
+    <div className="min-h-screen flex flex-col items-center justify-center bg-linear-to-br from-purple-600 to-indigo-950 text-white p-4">
+      <h1 className="text-2xl font-bold mb-6">Join or Create a Game</h1>
+      <div className="flex flex-col gap-6 w-full max-w-md">
+        <div className="bg-zinc-900 p-6 rounded-xl shadow-lg flex flex-col gap-4">
+          <h2 className="font-semibold text-lg text-center">Create a Room</h2>
+          <input
+            type="text"
+            placeholder="Room ID"
+            value={createRoomId}
+            onChange={(e) => setCreateRoomId(e.target.value)}
+            className="p-2 rounded bg-zinc-800 placeholder-zinc-400 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          />
+          <button onClick={handleCreate} className="bg-emerald-500 hover:bg-emerald-600 p-2 rounded font-bold">Create</button>
         </div>
 
-        {isHost && (
-          <div className="bg-zinc-800 p-3 rounded mb-4">
-            <h3 className="font-semibold mb-2">Host Controls</h3>
-            <div className="flex gap-2 mb-2">
-              <select value={swapA} onChange={(e) => setSwapA(e.target.value)} className="flex-1 p-2 rounded bg-zinc-700">
-                <option value="">Select Player A</option>
-                {players.map((p) => <option key={p} value={p}>{p}</option>)}
-              </select>
-              <select value={swapB} onChange={(e) => setSwapB(e.target.value)} className="flex-1 p-2 rounded bg-zinc-700">
-                <option value="">Select Player B</option>
-                {players.map((p) => <option key={p} value={p}>{p}</option>)}
-              </select>
-            </div>
-            <div className="flex gap-2">
-              <button onClick={handleSwap} className="bg-yellow-500 px-3 py-1 rounded">Swap</button>
-              <button onClick={handleManualStart} className="bg-emerald-500 px-3 py-1 rounded">Start</button>
-            </div>
+        <div className="bg-zinc-900 p-6 rounded-xl shadow-lg flex flex-col gap-4">
+          <h2 className="font-semibold text-lg text-center">Join a Room</h2>
+          <input
+            type="text"
+            placeholder="Room ID"
+            value={joinRoomId}
+            onChange={(e) => setJoinRoomId(e.target.value)}
+            className="p-2 rounded bg-zinc-800 placeholder-zinc-400 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          />
+          <button onClick={handleJoin} className="bg-blue-500 hover:bg-blue-600 p-2 rounded font-bold">Join</button>
+        </div>
+
+        {error && <p className="text-red-400 text-center">{error}</p>}
+
+        {players.length > 0 && (
+          <div className="bg-zinc-900 p-4 rounded-xl shadow-inner flex flex-col gap-2">
+            <h3 className="font-semibold text-center">Lobby ({players.length}/4)</h3>
+            <ul className="text-sm flex flex-col gap-1">
+              {players.map((p, i) => <li key={i}>{p}</li>)}
+            </ul>
+            {countdown !== null && <p className="text-yellow-400 text-center">Starting in: {countdown}</p>}
           </div>
         )}
-
-        <div className="flex gap-2 justify-between">
-          <button onClick={toggleReady} className="flex-1 bg-emerald-500 px-4 py-2 rounded">
-            {readyMap[user.username] ? "Unready" : "Ready"}
-          </button>
-          <button onClick={leaveRoom} className="flex-1 bg-red-600 px-4 py-2 rounded">Leave</button>
-        </div>
-
-        {countdown !== null && <p className="mt-3 text-yellow-400 text-center">Starting in: {countdown}</p>}
       </div>
     </div>
   );

@@ -52,11 +52,11 @@ export default function LandingPage({ user, socket }) {
           <div className="bg-indigo-700 rounded-xl p-6 shadow-lg flex flex-col">
             <div>
               <h2 className="text-2xl font-bold">Other Games</h2>
-              <p className="text-sm text-indigo-100 mt-1">Memory, Flag trivia, and more.</p>
+              <p className="text-sm text-indigo-100 mt-1">Memory and Flag trivia</p>
             </div>
 
             <div className="mt-6">
-              <button onClick={() => navigate("/memory")} className="bg-white text-indigo-700 px-4 py-2 rounded font-semibold hover:bg-gray-100">Play Memory</button>
+              <button onClick={() => navigate("/memory")} className="bg-white text-indigo-700 px-4 py-2 rounded font-semibold hover:bg-gray-100">Play Memory game</button>
             </div>
           </div>
         </div>
