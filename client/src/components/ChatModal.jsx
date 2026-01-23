@@ -3,14 +3,16 @@ import React, { useEffect, useState, useRef } from "react";
 /*
   Robust Global Chat modal.
 
+  Props:
+    - socket
+    - username
+    - initialMessages (optional) -> array of { username, message, ts } oldest->newest
+    - onClose
+
   Behavior:
-  - Subscribe to socket "globalChatMessage" BEFORE fetching history to avoid race conditions.
-  - Fetch latest N messages from GET /api/chat on mount.
-  - Merge + dedupe fetched messages with incoming socket messages.
-  - Lazy-load older messages when user scrolls to top (uses `before` timestamp query).
-  - Do NOT locally push the sent message onto state; rely on server broadcast as single source of truth.
-  - Auto-scroll to bottom after initial load and when new messages arrive.
-  - Small receive tone on incoming messages.
+  - Use initialMessages immediately for instant visibility (provided by Navbar via socket listeners).
+  - Subscribe to socket 'globalChatMessage' and merge incoming messages.
+  - Fetch history from /api/chat and merge (dedupe) so server is canonical.
 */
 
 const DEFAULT_LIMIT = 50;
@@ -23,12 +25,10 @@ const API_CHAT = (opts = {}) => {
 };
 
 function messageKey(m) {
-  // unique key for dedupe: username|ts|message
   return `${m.username}|${m.ts}|${m.message}`;
 }
 
 function dedupeMerge(existing = [], incoming = []) {
-  // keep chronological order oldest -> newest
   const map = new Map();
   existing.forEach((m) => map.set(messageKey(m), m));
   incoming.forEach((m) => map.set(messageKey(m), m));
@@ -37,8 +37,8 @@ function dedupeMerge(existing = [], incoming = []) {
   return arr;
 }
 
-export default function ChatModal({ socket, username, onClose }) {
-  const [messages, setMessages] = useState([]);
+export default function ChatModal({ socket, username, initialMessages = [], onClose }) {
+  const [messages, setMessages] = useState(Array.isArray(initialMessages) ? [...initialMessages] : []);
   const [text, setText] = useState("");
   const listRef = useRef(null);
   const loadingOlderRef = useRef(false);
@@ -49,20 +49,18 @@ export default function ChatModal({ socket, username, onClose }) {
     mountedRef.current = true;
     if (!socket) return;
 
-    // Handler for incoming socket messages
     const socketHandler = (msg) => {
       if (!msg || !msg.ts) return;
       setMessages((prev) => {
         const merged = dedupeMerge(prev, [msg]);
         if (!oldestTsRef.current && merged.length > 0) oldestTsRef.current = merged[0].ts;
-        // auto-scroll to bottom on next tick for new messages
         setTimeout(() => {
           if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
         }, 30);
         return merged;
       });
 
-      // small receive tone
+      // short tone
       try {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
         const o = ctx.createOscillator();
@@ -74,15 +72,12 @@ export default function ChatModal({ socket, username, onClose }) {
         g.gain.setValueAtTime(0.0001, ctx.currentTime);
         g.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + 0.01);
         setTimeout(() => { try { o.stop(); } catch (e) {} }, 120);
-      } catch (e) {
-        // ignore audio errors
-      }
+      } catch (e) {}
     };
 
-    // Subscribe BEFORE fetching history to avoid missing messages that arrive during fetch
     socket.on("globalChatMessage", socketHandler);
 
-    // Fetch latest messages
+    // Fetch latest messages and merge with any initialMessages we had
     const ac = new AbortController();
     fetch(API_CHAT({ limit: DEFAULT_LIMIT }), { signal: ac.signal })
       .then((r) => r.json())
@@ -94,15 +89,13 @@ export default function ChatModal({ socket, username, onClose }) {
             if (merged.length > 0) oldestTsRef.current = merged[0].ts;
             return merged;
           });
-          // scroll to bottom after initial load
           setTimeout(() => {
             if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
           }, 50);
         }
       })
-      .catch(() => {
-        // ignore fetch errors
-      });
+      .catch(() => {})
+      .finally(() => { /* no-op */ });
 
     return () => {
       mountedRef.current = false;
@@ -111,6 +104,7 @@ export default function ChatModal({ socket, username, onClose }) {
     };
   }, [socket]);
 
+  // lazy-load older messages
   const loadOlder = () => {
     if (loadingOlderRef.current) return;
     const before = oldestTsRef.current;
@@ -126,36 +120,27 @@ export default function ChatModal({ socket, username, onClose }) {
             if (merged.length > 0) oldestTsRef.current = merged[0].ts;
             return merged;
           });
-          // approximate keep position
           setTimeout(() => {
             if (listRef.current) listRef.current.scrollTop = 200;
           }, 60);
         }
       })
       .catch(() => {})
-      .finally(() => {
-        loadingOlderRef.current = false;
-      });
+      .finally(() => { loadingOlderRef.current = false; });
   };
 
   const onScroll = () => {
     if (!listRef.current) return;
-    if (listRef.current.scrollTop < 80) {
-      loadOlder();
-    }
+    if (listRef.current.scrollTop < 80) loadOlder();
   };
 
   const send = () => {
     if (!text.trim()) return;
     const ts = new Date().toISOString();
     const payload = { username, message: text.trim(), ts };
-    // Send via socket only; server will persist and broadcast
     if (socket) socket.emit("globalChat", payload);
     setText("");
-    // keep view scrolled to bottom in case broadcast is delayed
-    setTimeout(() => {
-      if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
-    }, 80);
+    setTimeout(() => { if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight; }, 80);
   };
 
   return (
@@ -166,12 +151,7 @@ export default function ChatModal({ socket, username, onClose }) {
           <button onClick={onClose} className="text-sm text-gray-600">Close</button>
         </div>
 
-        <div
-          ref={listRef}
-          onScroll={onScroll}
-          className="p-3 overflow-auto flex-1 space-y-2"
-          style={{ maxHeight: "50vh" }}
-        >
+        <div ref={listRef} onScroll={onScroll} className="p-3 overflow-auto flex-1 space-y-2" style={{ maxHeight: "50vh" }}>
           {messages.map((m, i) => {
             const isMe = m.username === username;
             const align = isMe ? "justify-end" : "justify-start";

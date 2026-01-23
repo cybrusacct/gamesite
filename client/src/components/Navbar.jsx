@@ -1,14 +1,65 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import ChatModal from "../components/ChatModal";
+import ChatModal from "../component/chatmodal";
 import ProfileModal from "./ProfileModal";
-import LeaderboardModal from "./LeaderboardModal";
+import LeaderboardModal from "./leaderboardmodal";
+
+/*
+  Navbar now maintains a small chat cache so recent messages are available
+  even when the Chat modal is not open. It listens for:
+    - "chatHistory" (initial history on connect)
+    - "globalChatMessage" (new messages)
+  and stores them in local state. Those messages are provided to ChatModal
+  via `initialMessages` for instant rendering.
+*/
 
 export default function Navbar({ user, socket, onOpenProfile }) {
   const [showChat, setShowChat] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [chatCache, setChatCache] = useState([]); // oldest -> newest
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleHistory = (messages) => {
+      if (!Array.isArray(messages)) return;
+      setChatCache((prev) => {
+        // merge/dedupe by username|ts|message
+        const map = new Map();
+        prev.forEach((m) => map.set(`${m.username}|${m.ts}|${m.message}`, m));
+        messages.forEach((m) => map.set(`${m.username}|${m.ts}|${m.message}`, m));
+        const arr = Array.from(map.values());
+        arr.sort((a, b) => new Date(a.ts) - new Date(b.ts));
+        return arr;
+      });
+    };
+
+    const handleIncoming = (msg) => {
+      if (!msg || !msg.ts) return;
+      setChatCache((prev) => {
+        // append if not duplicate
+        const key = `${msg.username}|${msg.ts}|${msg.message}`;
+        const exists = prev.some((m) => `${m.username}|${m.ts}|${m.message}` === key);
+        if (exists) return prev;
+        const next = [...prev, msg];
+        // keep max messages to, say, 200
+        if (next.length > 200) next.splice(0, next.length - 200);
+        return next;
+      });
+    };
+
+    socket.on("chatHistory", handleHistory);
+    socket.on("globalChatMessage", handleIncoming);
+
+    return () => {
+      socket.off("chatHistory", handleHistory);
+      socket.off("globalChatMessage", handleIncoming);
+    };
+  }, [socket]);
+
+  const previewMessages = chatCache.slice(-3);
 
   return (
     <>
@@ -17,8 +68,26 @@ export default function Navbar({ user, socket, onOpenProfile }) {
           <div className="font-bold cursor-pointer" onClick={() => navigate("/")}>GameSite</div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <button onClick={() => setShowChat(true)} className="p-2 rounded bg-zinc-800">💬 Chat</button>
+        <div className="flex items-center gap-3 relative">
+          <div className="relative">
+            <button onClick={() => setShowChat((s) => !s)} className="p-2 rounded bg-zinc-800">💬 Chat</button>
+            {/* small preview panel */}
+            <div className="absolute right-0 mt-10 w-64 bg-white text-black rounded shadow-lg p-2 hidden md:block">
+              {previewMessages.length === 0 ? (
+                <div className="text-xs text-gray-600">No messages</div>
+              ) : (
+                previewMessages.map((m, i) => (
+                  <div key={`${m.username}-${m.ts}-${i}`} className="text-xs mb-1">
+                    <span className="font-semibold">{m.username}:</span> <span className="text-gray-700">{m.message}</span>
+                  </div>
+                ))
+              )}
+              <div className="text-right">
+                <button onClick={() => setShowChat(true)} className="text-sm text-blue-600">Open chat</button>
+              </div>
+            </div>
+          </div>
+
           <button onClick={() => setShowProfile(true)} className="p-2 rounded bg-zinc-800">Profile</button>
           <button onClick={() => setShowLeaderboard(true)} className="p-2 rounded bg-zinc-800">🏆 Leaderboard</button>
         </div>
@@ -26,7 +95,7 @@ export default function Navbar({ user, socket, onOpenProfile }) {
 
       <div style={{ height: 48 }}></div>
 
-      {showChat && <ChatModal socket={socket} username={user?.username} onClose={() => setShowChat(false)} />}
+      {showChat && <ChatModal socket={socket} username={user?.username} initialMessages={chatCache} onClose={() => setShowChat(false)} />}
       {showProfile && <ProfileModal username={user?.username} onClose={() => setShowProfile(false)} />}
       {showLeaderboard && <LeaderboardModal onClose={() => setShowLeaderboard(false)} />}
     </>
