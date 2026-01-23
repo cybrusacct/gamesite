@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import ChatModal from "../component/chatmodal";
 import ProfileModal from "./ProfileModal";
-import LeaderboardModal from "./leaderboardmodal";
+import LeaderboardModal from "./LeaderboardModal";
 
 /*
   Navbar now maintains a small chat cache so recent messages are available
