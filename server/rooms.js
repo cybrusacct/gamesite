@@ -370,7 +370,6 @@ export function callJackwhot(io, roomId, callerUsername) {
   room.version++;
   touchRoom(room);
 
-  // Return resolution data; higher-level code (index.js) may award points and broadcast gameOver
   console.log("CALL_JACKWHOT", roomId, callerUsername, "win?", hasFour, "version", room.version);
   return { win: hasFour, winners, winningTeam };
 }
@@ -469,6 +468,27 @@ export function attachSocket(roomId, username, socketId) {
 }
 
 /* =======================
+   Remove socket mapping helper
+   - Called when a socket disconnects; removes any username->socketId entries
+======================= */
+export function removeSocketMapping(socketId) {
+  if (!socketId) return;
+  Object.keys(rooms).forEach((roomId) => {
+    const room = rooms[roomId];
+    if (!room || !room._socketMap) return;
+    for (const [uname, sid] of Object.entries(room._socketMap)) {
+      if (sid === socketId) {
+        delete room._socketMap[uname];
+        // Do not delete room or players here; leave that to leaveRoom events
+        room.version++;
+        touchRoom(room);
+        console.log("REMOVE_SOCKET_MAPPING", roomId, uname);
+      }
+    }
+  });
+}
+
+/* =======================
    Inactivity cleanup
 ======================= */
 export function cleanupInactiveRooms(io, maxIdleMs = 5 * 60 * 1000) {
@@ -516,6 +536,7 @@ export default {
   swapPlayers,
   kickPlayer,
   attachSocket,
+  removeSocketMapping,
   cleanupInactiveRooms,
   clearAllCountdowns,
   publicSnapshot,
