@@ -1,14 +1,19 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import Avatar from "../../components/Avatar";
 import useSocket from "../../hooks/useSocket";
 
 /*
-  Lobby UI updated to match screenshot:
-  - Grid of player tiles (two columns) with HOST badge and Ready status
-  - Large green Unready / Start button and red Leave button across the width
-  - Host-only Start button shown in place of Unready (host starts match)
-  - Uses server authoritative events (updateLobby, updateGame, countdown, startGame)
+  Lobby component:
+  - listens for updateLobby and updateGame
+  - navigates to /kemps when server emits startGame OR when updateGame.gameActive === true
+  - host can swap players and the server enforces host-only permission
+  - added countdown support:
+    - host clicking Start emits "startCountdown" (server-aware) and also starts a local fallback countdown
+    - all clients listen for a "countdown" event to display/start the countdown
+    - when countdown reaches 0 clients navigate to /kemps
+    - host will emit "startGame" when its local countdown finishes as a fallback if server doesn't
+      broadcast startGame itself
 */
 
 export default function Lobby({ user, socket: socketProp, roomId, role }) {
@@ -16,15 +21,16 @@ export default function Lobby({ user, socket: socketProp, roomId, role }) {
   const [players, setPlayers] = useState([]);
   const [host, setHost] = useState(null);
   const [readyMap, setReadyMap] = useState({});
+  const [swapA, setSwapA] = useState("");
+  const [swapB, setSwapB] = useState("");
   const [countdown, setCountdown] = useState(null);
+  const countdownRef = useRef(null); // stores interval id
   const navigate = useNavigate();
 
   useEffect(() => {
     if (!socket) return;
 
-    // join + request snapshot to avoid missing events
     socket.emit("joinRoom", { roomId, username: user.username });
-    socket.emit("rejoinRoom", { roomId, username: user.username });
 
     const onUpdateLobby = (payload) => {
       const playerList = Array.isArray(payload) ? payload : payload?.players || [];
@@ -33,40 +39,116 @@ export default function Lobby({ user, socket: socketProp, roomId, role }) {
       setHost(hostUser);
       setReadyMap((payload && payload.ready) || {});
     };
-
-    const onCountdown = (s) => {
-      setCountdown(s);
-    };
-
-    const onStartGame = (snapshot) => {
-      // navigate to kemps; client will receive initHand/syncHand privately
-      navigate("/kemps");
-    };
-
-    const onUpdateGame = (snapshot) => {
-      // if server says gameActive, navigate
-      if (snapshot?.gameActive) navigate("/kemps");
-    };
-
     socket.on("updateLobby", onUpdateLobby);
-    socket.on("countdown", onCountdown);
-    socket.on("startGame", onStartGame);
+
+    // Also listen for public game state updates so we can detect server-authoritative start
+    const onUpdateGame = (snapshot) => {
+      if (!snapshot) return;
+      // if game is active, navigate to game view
+      if (snapshot.gameActive) {
+        // clear any local countdown
+        if (countdownRef.current) {
+          clearInterval(countdownRef.current);
+          countdownRef.current = null;
+        }
+        setCountdown(null);
+        navigate("/kemps");
+      }
+    };
     socket.on("updateGame", onUpdateGame);
 
-    socket.on("kicked", () => navigate("/"));
+    // old compatibility: server may emit explicit startGame event
+    socket.on("startGame", (snapshot) => {
+      if (countdownRef.current) {
+        clearInterval(countdownRef.current);
+        countdownRef.current = null;
+      }
+      setCountdown(null);
+      navigate("/kemps");
+    });
+
+    // support server-driven countdown (other clients or host may receive this)
+    const onCountdown = (seconds) => {
+      // server may send a number or an object { seconds: n }
+      const secs = typeof seconds === "number" ? seconds : (seconds?.seconds ?? null);
+      if (secs == null) return;
+      startClientCountdown(secs, false /* don't emit startGame when this client hits 0 */);
+    };
+    socket.on("countdown", onCountdown);
+
+    socket.on("kicked", () => {
+      if (countdownRef.current) {
+        clearInterval(countdownRef.current);
+        countdownRef.current = null;
+      }
+      setCountdown(null);
+      navigate("/");
+    });
 
     return () => {
       socket.off("updateLobby", onUpdateLobby);
-      socket.off("countdown", onCountdown);
-      socket.off("startGame", onStartGame);
       socket.off("updateGame", onUpdateGame);
+      socket.off("startGame");
+      socket.off("countdown", onCountdown);
       socket.off("kicked");
+      if (countdownRef.current) {
+        clearInterval(countdownRef.current);
+        countdownRef.current = null;
+      }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, roomId, user.username, navigate]);
+
+  // start a client-side countdown that updates state every second.
+  // if hostStarter is true, when countdown reaches 0 this client will emit "startGame" (fallback)
+  const startClientCountdown = (startSeconds, hostStarter) => {
+    // clear existing
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
+
+    setCountdown(startSeconds);
+    let remaining = startSeconds;
+
+    countdownRef.current = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        // finish
+        clearInterval(countdownRef.current);
+        countdownRef.current = null;
+        setCountdown(null);
+
+        // host fallback: emit startGame if this client started it locally
+        if (hostStarter) {
+          socket.emit("startGame", { roomId });
+          // also navigate immediately as fallback; server should also emit startGame/updateGame
+          navigate("/kemps");
+        } else {
+          // non-host clients: rely on server startGame/updateGame; but fallback navigate to kemps
+          navigate("/kemps");
+        }
+      } else {
+        setCountdown(remaining);
+      }
+    }, 1000);
+  };
 
   const leaveRoom = () => {
     socket.emit("leaveRoom", { roomId, username: user.username });
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
+    setCountdown(null);
     navigate("/");
+  };
+
+  const isHost = host === user.username;
+
+  const handleKick = (target) => {
+    if (!isHost) return;
+    socket.emit("kickPlayer", { roomId, username: target });
   };
 
   const toggleReady = () => {
@@ -75,61 +157,109 @@ export default function Lobby({ user, socket: socketProp, roomId, role }) {
     setReadyMap((m) => ({ ...m, [user.username]: newReady }));
   };
 
-  const isHost = host === user.username;
-
-  const handleStart = () => {
+  const handleSwap = () => {
     if (!isHost) return;
-    socket.emit("startGame", { roomId });
+    const indexA = players.indexOf(swapA);
+    const indexB = players.indexOf(swapB);
+    if (indexA === -1 || indexB === -1) return;
+    socket.emit("swapPlayers", { roomId, indexA, indexB });
+    setSwapA("");
+    setSwapB("");
   };
 
-  // Render a player tile like the screenshot
-  const PlayerTile = ({ name }) => {
-    const isHostTile = name === host;
-    const isReady = !!readyMap[name];
-    return (
-      <div className="bg-zinc-800 p-3 rounded-lg flex items-center gap-3" style={{ minWidth: 220 }}>
-        <div><Avatar name={name} size="sm" /></div>
-        <div className="flex-1">
-          <div className="flex items-center justify-between">
-            <div className="font-semibold">{name}</div>
-            {isHostTile && <div className="text-[10px] bg-yellow-400 text-black px-2 py-1 rounded ml-2">HOST</div>}
-          </div>
-          <div className={`text-xs mt-1 ${isReady ? "text-emerald-300" : "text-gray-400"}`}>{isReady ? "Ready" : "Not ready"}</div>
-        </div>
-      </div>
-    );
-  };
-
-  // Build two-column grid like the screenshot (max 4 players)
-  const gridPlayers = () => {
-    return (
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {players.map((p) => <PlayerTile key={p} name={p} />)}
-      </div>
-    );
+  const handleManualStart = () => {
+    if (!isHost) return;
+    if (players.length >= 2 && players.length <= 4) {
+      // First try to ask server to broadcast countdown (if server supports it)
+      socket.emit("startCountdown", { roomId, seconds: 5 });
+      // start a local host-driven countdown as fallback; when it reaches 0 this client will emit startGame
+      startClientCountdown(5, true);
+    }
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-start bg-[#0f1720] text-white p-6">
-      <div className="w-full max-w-lg">
+    <div className="min-h-screen flex flex-col items-center justify-start bg-linear-to-br from-purple-700 to-indigo-900 text-white p-4">
+      <div className="w-full max-w-md">
         <h1 className="text-2xl font-bold mb-4 text-center">Lobby: {roomId}</h1>
 
-        <div className="bg-transparent p-2 mb-4">
-          {gridPlayers()}
+        <div className="bg-zinc-900 p-3 rounded-lg mb-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="font-semibold">Players ({players.length}/4)</div>
+            <div className="text-xs text-gray-300">Host: <span className="font-medium">{host}</span></div>
+          </div>
+
+          {/* Team A (indices 0,2) top row */}
+          <div className="flex gap-2 items-center justify-start flex-wrap">
+            {players.map((p, i) => {
+              if (i % 2 === 0) {
+                return (
+                  <div key={p} className="flex items-center gap-2 bg-zinc-800 p-2 rounded">
+                    <Avatar name={p} size="sm" />
+                    <div className="text-sm">
+                      <div className="font-semibold">{p} {host === p && <span className="text-xs bg-yellow-400 text-black px-1 rounded ml-1">HOST</span>}</div>
+                      <div className="text-xs text-gray-300">{readyMap[p] ? <span className="text-emerald-300">Ready</span> : <span className="text-gray-400">Not ready</span>}</div>
+                    </div>
+                    {isHost && p !== user.username && <button onClick={() => handleKick(p)} className="ml-2 bg-red-500 px-2 py-1 rounded text-xs">Kick</button>}
+                  </div>
+                );
+              }
+              return null;
+            })}
+          </div>
+
+          {/* Team B (indices 1,3) bottom row */}
+          <div className="mt-2 flex gap-2 items-center justify-start flex-wrap">
+            {players.map((p, i) => {
+              if (i % 2 === 1) {
+                return (
+                  <div key={p} className="flex items-center gap-2 bg-zinc-800 p-2 rounded">
+                    <Avatar name={p} size="sm" />
+                    <div className="text-sm">
+                      <div className="font-semibold">{p} {host === p && <span className="text-xs bg-yellow-400 text-black px-1 rounded ml-1">HOST</span>}</div>
+                      <div className="text-xs text-gray-300">{readyMap[p] ? <span className="text-emerald-300">Ready</span> : <span className="text-gray-400">Not ready</span>}</div>
+                    </div>
+                    {isHost && p !== user.username && <button onClick={() => handleKick(p)} className="ml-2 bg-red-500 px-2 py-1 rounded text-xs">Kick</button>}
+                  </div>
+                );
+              }
+              return null;
+            })}
+          </div>
         </div>
 
-        <div className="mt-6 flex gap-3">
-          {isHost ? (
-            <button onClick={handleStart} className="flex-1 bg-emerald-500 hover:bg-emerald-600 py-3 rounded text-black font-semibold">Start</button>
-          ) : (
-            <button onClick={toggleReady} className="flex-1 bg-emerald-500 hover:bg-emerald-600 py-3 rounded text-black font-semibold">
-              {readyMap[user.username] ? "Unready" : "Ready"}
-            </button>
-          )}
-          <button onClick={leaveRoom} className="flex-1 bg-red-600 hover:bg-red-700 py-3 rounded text-white font-semibold">Leave</button>
-        </div>
+        {isHost && (
+          <div className="bg-zinc-800 p-3 rounded mb-4">
+            <h3 className="font-semibold mb-2">Host Controls</h3>
+            <div className="flex gap-2 mb-2">
+              <select value={swapA} onChange={(e) => setSwapA(e.target.value)} className="flex-1 p-2 rounded bg-zinc-700">
+                <option value="">Select Player A</option>
+                {players.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+              <select value={swapB} onChange={(e) => setSwapB(e.target.value)} className="flex-1 p-2 rounded bg-zinc-700">
+                <option value="">Select Player B</option>
+                {players.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={handleSwap} className="bg-yellow-500 px-3 py-1 rounded">Swap</button>
+              <button onClick={handleManualStart} className="bg-emerald-500 px-3 py-1 rounded">Start</button>
+            </div>
+          </div>
+        )}
 
-        {countdown !== null && <div className="mt-3 text-center text-yellow-400">Starting in: {countdown}</div>}
+        {/* Countdown display */}
+        {countdown !== null && (
+          <div className="text-center mb-3">
+            <div className="text-yellow-300 font-semibold">Starting in: {countdown}</div>
+          </div>
+        )}
+
+        <div className="flex gap-2 justify-between">
+          <button onClick={toggleReady} className="flex-1 bg-emerald-500 px-4 py-2 rounded">
+            {readyMap[user.username] ? "Unready" : "Ready"}
+          </button>
+          <button onClick={leaveRoom} className="flex-1 bg-red-600 px-4 py-2 rounded">Leave</button>
+        </div>
       </div>
     </div>
   );
