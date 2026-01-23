@@ -150,7 +150,7 @@ export default function Lobby({ user, socket: socketProp, roomId, role }) {
 
         <div className="flex gap-2 justify-between">
           <button onClick={toggleReady} className="flex-1 bg-emerald-500 px-4 py-2 rounded">
-            {readyMap[user.username] ? "Not Ready" : "Ready"}
+            {readyMap[user.username] ? "Unready" : "Ready"}
           </button>
           <button onClick={leaveRoom} className="flex-1 bg-red-600 px-4 py-2 rounded">Leave</button>
         </div>
