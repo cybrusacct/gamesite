@@ -120,7 +120,7 @@ export function publicSnapshot(roomId) {
    - single countdown per room
    - requires all ready unless forced by host
    - locks room while countdown runs
-   - deals on expire and emits canonical events
+   - deals on expire and emits canonical events (startGame + updateGame)
 ======================= */
 export function startCountdown(io, roomId, forcedBy = null) {
   const room = rooms[roomId];
@@ -132,10 +132,14 @@ export function startCountdown(io, roomId, forcedBy = null) {
   const allReady = room.players.every((p) => room.ready[p]);
   if (!allReady && forcedBy !== room.host) {
     // do not start if not all ready and not forced by host
+    console.log("START_BLOCKED not all ready", roomId, "forcedBy", forcedBy, "host", room.host);
     return;
   }
 
-  if (room.countdown) return; // already counting
+  if (room.countdown) {
+    console.log("START_IGNORED countdown already running", roomId);
+    return; // already counting
+  }
 
   room.locked = true;
   room.countdown = { intervalId: null, value: 5 };
@@ -190,7 +194,8 @@ export function startCountdown(io, roomId, forcedBy = null) {
         if (sid) io.to(sid).emit("initHand", { hand: room.hands[p] || [], roomVersion: room.version });
       });
 
-      // send canonical public snapshot
+      // Emit startGame so clients navigate; then emit canonical updateGame
+      io.to(roomId).emit("startGame", publicSnapshot(roomId));
       io.to(roomId).emit("updateGame", publicSnapshot(roomId));
       console.log("START_GAME", roomId, "version", room.version);
     }
@@ -239,6 +244,9 @@ export function rematchRoom(io, roomId) {
     const sid = room._socketMap?.[p];
     if (sid) io.to(sid).emit("initHand", { hand: room.hands[p] || [], roomVersion: room.version });
   });
+
+  // announce and update
+  io.to(roomId).emit("startGame", publicSnapshot(roomId));
   io.to(roomId).emit("updateGame", publicSnapshot(roomId));
   console.log("REMATCH", roomId, "version", room.version);
   return room;
@@ -246,10 +254,6 @@ export function rematchRoom(io, roomId) {
 
 /* =======================
    PASS CARD (authoritative)
-   - server updates hands
-   - emits passAnimation (mask) to room
-   - emits private receiveCard to recipient
-   - emits canonical updateGame
 ======================= */
 export function passCard(io, roomId, fromUsername, cardIndex) {
   const room = rooms[roomId];
@@ -294,7 +298,6 @@ export function passCard(io, roomId, fromUsername, cardIndex) {
 
 /* =======================
    SIGNAL / CALL / SUSPECT
-   - update room state, increment version, emit canonical updateGame
 ======================= */
 export function sendSignal(io, roomId, signerUsername) {
   const room = rooms[roomId];
@@ -434,6 +437,7 @@ export function swapPlayers(roomId, indexA, indexB) {
   room.host = room.players[0] || null;
   room.version++;
   touchRoom(room);
+  console.log("SWAP", roomId, indexA, indexB, "newPlayers", room.players);
 }
 
 export function kickPlayer(roomId, username) {
@@ -446,6 +450,7 @@ export function kickPlayer(roomId, username) {
   if (room._socketMap && room._socketMap[username]) delete room._socketMap[username];
   room.version++;
   touchRoom(room);
+  console.log("KICK", roomId, username);
 }
 
 /* =======================
@@ -469,7 +474,6 @@ export function attachSocket(roomId, username, socketId) {
 
 /* =======================
    Remove socket mapping helper
-   - Called when a socket disconnects; removes any username->socketId entries
 ======================= */
 export function removeSocketMapping(socketId) {
   if (!socketId) return;
@@ -479,7 +483,6 @@ export function removeSocketMapping(socketId) {
     for (const [uname, sid] of Object.entries(room._socketMap)) {
       if (sid === socketId) {
         delete room._socketMap[uname];
-        // Do not delete room or players here; leave that to leaveRoom events
         room.version++;
         touchRoom(room);
         console.log("REMOVE_SOCKET_MAPPING", roomId, uname);

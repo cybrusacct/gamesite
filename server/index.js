@@ -1,3 +1,4 @@
+// server/index.js
 import express from "express";
 import http from "http";
 import path from "path";
@@ -51,10 +52,13 @@ app.use((req, res, next) => {
   return limiter(req, res, next);
 });
 
+// CORS (set via env for production)
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 app.use(cors({ origin: CORS_ORIGIN }));
 
-/* ---- Users API (unchanged behavior) ---- */
+/* ---- Expose users API via usersModule ---- */
+
+// Signup
 app.post("/api/signup", (req, res) => {
   const { username, pin } = req.body;
   try {
@@ -72,6 +76,7 @@ app.post("/api/signup", (req, res) => {
   }
 });
 
+// Login
 app.post("/api/login", (req, res) => {
   try {
     const { username, pin } = req.body;
@@ -85,12 +90,14 @@ app.post("/api/login", (req, res) => {
   }
 });
 
+// Get profile
 app.get("/api/profile/:username", (req, res) => {
   const u = usersModule.getUser(req.params.username);
   if (!u) return res.status(404).json({ ok: false, error: "User not found" });
   return res.json({ ok: true, user: u });
 });
 
+// Leaderboard
 app.get("/api/leaderboard", (req, res) => {
   const users = usersModule.getAllUsers();
   users.sort((a, b) => {
@@ -100,7 +107,7 @@ app.get("/api/leaderboard", (req, res) => {
   return res.json({ ok: true, leaderboard: users });
 });
 
-/* ---- Chat history HTTP endpoint (lazy-load) ---- */
+/* ---- Chat endpoints for lazy-load ---- */
 app.get("/api/chat", (req, res) => {
   const before = req.query.before || null;
   const limit = parseInt(req.query.limit || "50", 10);
@@ -116,6 +123,7 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, uptime: process.uptime() });
 });
 
+// Fallback for SPA (serve index.html if present)
 app.get("*", (req, res, next) => {
   if (req.path.startsWith("/api") || req.path.startsWith("/socket.io")) return next();
   try {
@@ -126,18 +134,23 @@ app.get("*", (req, res, next) => {
 });
 
 /* -------------------------
-   Socket.IO (server authoritative)
+   Socket.IO events (game)
    ------------------------- */
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: CORS_ORIGIN }, pingTimeout: 20000 });
+
+// Single-instance Socket.IO setup (no Redis adapter)
+const io = new Server(server, {
+  cors: { origin: CORS_ORIGIN },
+  pingTimeout: 20000,
+});
 
 console.log("Socket.IO running");
 
 // Periodic cleanup of inactive rooms
 setInterval(() => {
   try { cleanupInactiveRooms(io); } catch (e) { console.warn("cleanup error", e && e.message); }
-}, 60 * 1000);
+}, 60 * 1000); // every 60s
 
 io.on("connection", (socket) => {
   console.log("socket connected", socket.id);
@@ -205,9 +218,46 @@ io.on("connection", (socket) => {
     console.log("START requested", roomId, "by", requester);
   });
 
+  socket.on("swapPlayers", ({ roomId, indexA, indexB }) => {
+    if (!roomId) return;
+    const room = getRoom(roomId);
+    if (!room) return;
+    const requester = socket.data && socket.data.username ? socket.data.username : null;
+    if (requester !== room.host) {
+      console.log("SWAP_DENIED", roomId, requester, "not host");
+      return;
+    }
+    swapPlayers(roomId, indexA, indexB);
+    const updated = getRoom(roomId);
+    io.to(roomId).emit("updateLobby", { players: updated.players, host: updated.host, ready: updated.ready, version: updated.version });
+    console.log("SWAP_REQUEST", roomId, requester, indexA, indexB);
+  });
+
+  socket.on("kickPlayer", ({ roomId, username }) => {
+    if (!roomId || !username) return;
+    const room = getRoom(roomId);
+    if (!room) return;
+    const requester = socket.data && socket.data.username ? socket.data.username : null;
+    if (requester !== room.host) {
+      console.log("KICK_DENIED", roomId, requester, "not host");
+      return;
+    }
+    kickPlayer(roomId, username);
+    const updated = getRoom(roomId);
+    io.to(roomId).emit("updateLobby", { players: updated.players, host: updated.host, ready: updated.ready, version: updated.version });
+    const sid = updated._socketMap?.[username];
+    if (sid) {
+      io.to(sid).emit("kicked", { roomId, reason: "Kicked by host" });
+      // remove mapping
+      delete updated._socketMap?.[username];
+    }
+    console.log("KICK_REQUEST", roomId, requester, username);
+  });
+
   socket.on("passCard", ({ roomId, fromUsername, cardIndex }) => {
     if (!roomId || !fromUsername) return;
     passCard(io, roomId, fromUsername, cardIndex);
+    // passCard handles emits
   });
 
   socket.on("sendSignal", ({ roomId, username }) => {
@@ -219,14 +269,14 @@ io.on("connection", (socket) => {
     if (!roomId || !callerUsername) return;
     const res = callJackwhot(io, roomId, callerUsername);
     if (!res) return;
-    // higher-level code (index.js previously) may award points and emit gameOver; keep that logic where it was
+    // Higher-level code may award points and emit gameOver as before
   });
 
   socket.on("suspect", ({ roomId, suspector, target }) => {
     if (!roomId || !suspector || !target) return;
     const res = suspectPlayer(io, roomId, suspector, target);
     if (!res) return;
-    // higher-level gameOver handling remains in index.js if required
+    // Higher-level code may award points and emit gameOver as before
   });
 
   socket.on("rematch", ({ roomId, username }) => {
@@ -290,6 +340,7 @@ async function shutdown() {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
+/* ---- Start server ---- */
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
