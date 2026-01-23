@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import ChatModal from "../component/chatmodal";
+import ChatModal from "../components/ChatModal";
 import ProfileModal from "./ProfileModal";
 import LeaderboardModal from "./LeaderboardModal";
 
