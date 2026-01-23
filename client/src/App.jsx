@@ -11,13 +11,15 @@ import Kemps from './games/kemps/kemps';
 import MemoryGame from './games/memorygame/MemoryGame';
 import FlagTrivia from './games/flag-trivia/FlagTrivia';
 import Navbar from './components/Navbar';
+import { SocketProvider } from './contexts/SocketProvider';
 
 function App() {
   const [stage, setStage] = useState("loading"); // loading | signup | landing
   const [user, setUser] = useState(null);
 
   const [gameInfo, setGameInfo] = useState(null);
-  // { socket, roomId, role } => passed from JoinGame to Lobby/Kemps
+  // { roomId, role } => passed from JoinGame to Lobby/Kemps
+  // socket is obtained inside components via useSocket()
 
   useEffect(() => {
     if (stage === "loading") {
@@ -25,7 +27,6 @@ function App() {
       return () => clearTimeout(timer);
     }
   }, [stage]);
-
 
   return (
     <div className="bg-[#10171f]">
@@ -40,59 +41,61 @@ function App() {
       )}
 
       {stage === "landing" && (
-        <Router>
-          {/* Navbar shown for all routes once user logged in */}
-          <Navbar user={user} socket={gameInfo?.socket} />
+        <SocketProvider>
+          <Router>
+            {/* Navbar shown for all routes once user logged in (Navbar should call useSocket() internally) */}
+            <Navbar user={user} />
 
-          <Routes>
-            {/* Landing page */}
-            <Route path="/" element={<LandingPage user={user} socket={gameInfo?.socket} />} />
+            <Routes>
+              {/* Landing page */}
+              <Route path="/" element={<LandingPage user={user} />} />
 
-            {/* Join/Create Game */}
-            <Route
-              path="/join"
-              element={<JoinGame user={user} onJoin={(info) => setGameInfo(info)} />}
-            />
+              {/* Join/Create Game */}
+              <Route
+                path="/join"
+                element={<JoinGame user={user} onJoin={(info) => {
+                  // store only roomId + role — components use the shared socket hook
+                  setGameInfo({ roomId: info.roomId, role: info.role });
+                }} />}
+              />
 
-            {/* Lobby: wait for 2–4 players + manual start */}
-            <Route
-              path="/lobby"
-              element={
-                gameInfo ? (
-                  <Lobby
-                    user={user}
-                    socket={gameInfo.socket}
-                    roomId={gameInfo.roomId}
-                    role={gameInfo.role}
-                  />
-                ) : (
-                  <p className="text-white">Please join a room first!</p>
-                )
-              }
-            />
+              {/* Lobby: wait for 2–4 players + manual start */}
+              <Route
+                path="/lobby"
+                element={
+                  gameInfo ? (
+                    <Lobby
+                      user={user}
+                      roomId={gameInfo.roomId}
+                      role={gameInfo.role}
+                    />
+                  ) : (
+                    <p className="text-white">Please join a room first!</p>
+                  )
+                }
+              />
 
-            {/* Kemps game */}
-            <Route
-              path="/kemps"
-              element={
-                gameInfo ? (
-                  <Kemps
-                    user={user}
-                    socket={gameInfo.socket}
-                    roomId={gameInfo.roomId}
-                    role={gameInfo.role}
-                  />
-                ) : (
-                  <p className="text-white">Please join a room first!</p>
-                )
-              }
-            />
+              {/* Kemps game */}
+              <Route
+                path="/kemps"
+                element={
+                  gameInfo ? (
+                    <Kemps
+                      user={user}
+                      roomId={gameInfo.roomId}
+                      role={gameInfo.role}
+                    />
+                  ) : (
+                    <p className="text-white">Please join a room first!</p>
+                  )
+                }
+              />
 
-            <Route path="/memory" element={<MemoryGame user={user} />} />
-            <Route path="/flag-trivia" element={<FlagTrivia user={user} />} />
-            {/* Leaderboard is now a modal opened from the Navbar; no separate route */}
-          </Routes>
-        </Router>
+              <Route path="/memory" element={<MemoryGame user={user} />} />
+              <Route path="/flag-trivia" element={<FlagTrivia user={user} />} />
+            </Routes>
+          </Router>
+        </SocketProvider>
       )}
     </div>
   );
