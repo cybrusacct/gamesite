@@ -1,15 +1,16 @@
 import React, { useEffect, useState, useRef } from "react";
 
 /*
-  Global chat robust behavior:
-  - Subscribe to socket BEFORE fetching so we don't miss messages
-  - Merge + dedupe fetched messages and incoming socket messages
-  - Auto-scroll to bottom after fetch and when new messages appended
+  Robust ChatModal:
+  - subscribe to socket BEFORE fetching history (prevents race)
+  - merge and dedupe fetched messages + incoming socket messages
+  - auto-scroll to bottom after fetch and on new messages
+  - do not push sent message locally (server broadcast is source of truth)
 */
 
 const API_CHAT = "/api/chat?limit=50";
 
-function dedupe(existing, incoming) {
+function dedupe(existing = [], incoming = []) {
   const map = new Map();
   existing.forEach((m) => map.set(`${m.username}|${m.ts}|${m.message}`, m));
   incoming.forEach((m) => map.set(`${m.username}|${m.ts}|${m.message}`, m));
@@ -29,15 +30,16 @@ export default function ChatModal({ socket, username, onClose }) {
     if (!socket) return;
     let mounted = true;
 
+    // subscribe first
     const handler = (msg) => {
       setMessages((prev) => {
         const merged = dedupe(prev, [msg]);
         if (!oldestTsRef.current && merged.length) oldestTsRef.current = merged[0].ts;
-        // scroll to bottom on next tick
         setTimeout(() => { if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight; }, 30);
         return merged;
       });
-      // small notification tone
+
+      // small incoming tone
       try {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
         const o = ctx.createOscillator();
@@ -52,10 +54,9 @@ export default function ChatModal({ socket, username, onClose }) {
       } catch (e) {}
     };
 
-    // subscribe first
     socket.on("globalChatMessage", handler);
 
-    // fetch latest
+    // fetch latest messages after subscription to avoid races
     fetch(API_CHAT)
       .then((r) => r.json())
       .then((data) => {
@@ -95,7 +96,6 @@ export default function ChatModal({ socket, username, onClose }) {
               if (merged.length) oldestTsRef.current = merged[0].ts;
               return merged;
             });
-            // keep scroll pos approx
             setTimeout(() => { if (listRef.current) listRef.current.scrollTop = 200; }, 50);
           }
         })

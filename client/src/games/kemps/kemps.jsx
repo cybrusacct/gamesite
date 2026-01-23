@@ -8,19 +8,20 @@ import useSocket from "../../hooks/useSocket";
 import { playPass } from "../../utils/sounds";
 
 /*
-  Kemps game view (fixed):
-  - Normalize hands from server payload so we never do .map on undefined
-  - Render card-backs for opponents/ally (faceUp=false)
-  - Render your hand face-up
-  - Listen for private receiveCard events and merge into local hands
-  - Suspect flow: modal selection UI -> confirm -> emit
+  Fixed Kemps view:
+  - normalize hands so no undefined maps
+  - safe receiveCard functional update
+  - orientation: bottom=0, top=180, left=90, right=-90
+  - public passAnimation shows back only (no face data used)
+  - suspect modal / selection preserved
 */
 
 export default function Kemps({ user, socket: socketProp, roomId }) {
   const socket = socketProp || useSocket();
+  const myName = user?.username;
 
-  const [hands, setHands] = useState({});               // normalized map username -> array
-  const [lobbyPlayers, setLobbyPlayers] = useState([]); // ordered players
+  const [lobbyPlayers, setLobbyPlayers] = useState([]);
+  const [hands, setHands] = useState({}); // normalized map username -> array
   const [turnUsername, setTurnUsername] = useState(null);
   const [selectedIndex, setSelectedIndex] = useState(null);
   const [revealedPlayers, setRevealedPlayers] = useState([]);
@@ -30,57 +31,53 @@ export default function Kemps({ user, socket: socketProp, roomId }) {
   const [gameOverInfo, setGameOverInfo] = useState(null);
   const [showGameOver, setShowGameOver] = useState(false);
 
-  // suspect selection modal
+  // suspect modal
   const [showSuspectModal, setShowSuspectModal] = useState(false);
   const [suspectTarget, setSuspectTarget] = useState(null);
 
-  const myName = user?.username;
-
-  // compute ally/opponents robustly even with fewer players
+  // computed positions
   const myIndex = lobbyPlayers.indexOf(myName);
   const ally = myIndex >= 0 && lobbyPlayers.length > 0 ? lobbyPlayers[(myIndex + 2) % lobbyPlayers.length] : null;
   const enemyLeft = myIndex >= 0 && lobbyPlayers.length > 0 ? lobbyPlayers[(myIndex + (lobbyPlayers.length - 1)) % lobbyPlayers.length] : null;
   const enemyRight = myIndex >= 0 && lobbyPlayers.length > 0 ? lobbyPlayers[(myIndex + 1) % lobbyPlayers.length] : null;
 
-  // Helpers
-  const normalizeHands = (room) => {
-    const out = {};
-    const ps = (room?.players || []);
-    // ensure every player key exists and is an array
-    ps.forEach((p) => {
-      out[p] = Array.isArray(room?.hands?.[p]) ? [...room.hands[p]] : [];
+  // Normalize hands: ensure each player key exists and is an array
+  const normalizeHands = (roomOrPlayers, roomHands) => {
+    const normalized = {};
+    const players = Array.isArray(roomOrPlayers) ? roomOrPlayers : (roomOrPlayers?.players || []);
+    players.forEach((p) => {
+      normalized[p] = Array.isArray(roomHands?.[p]) ? [...roomHands[p]] : [];
     });
-    return out;
+    return normalized;
   };
 
   useEffect(() => {
     if (!socket || !roomId) return;
 
-    // Join room (server idempotent)
+    // join idempotent
     socket.emit("joinRoom", { roomId, username: myName });
 
-    // Lobby updates
     const onUpdateLobby = (payload) => {
       const players = Array.isArray(payload) ? payload : payload?.players || [];
       setLobbyPlayers(players || []);
     };
     socket.on("updateLobby", onUpdateLobby);
 
-    // Start game - server sends the room with hands/players and turnIndex
     socket.on("startGame", (room) => {
-      setLobbyPlayers(room?.players || []);
-      setHands(normalizeHands(room));
-      setTurnUsername((room?.players || [])[room?.turnIndex ?? 0] || null);
+      const players = room?.players || [];
+      setLobbyPlayers(players);
+      setHands(normalizeHands(players, room.hands || {}));
+      setTurnUsername(players[room?.turnIndex ?? 0] || null);
       setRevealedPlayers(room?.revealedPlayers || []);
-      setShowGameOver(false);
       setGameOverInfo(null);
+      setShowGameOver(false);
     });
 
-    // game updates
     socket.on("updateGame", (room) => {
-      setLobbyPlayers(room?.players || []);
-      setHands(normalizeHands(room));
-      setTurnUsername((room?.players || [])[room?.turnIndex ?? 0] || null);
+      const players = room?.players || lobbyPlayers || [];
+      setLobbyPlayers(players);
+      setHands(normalizeHands(players, room.hands || {}));
+      setTurnUsername(players[room?.turnIndex ?? 0] || null);
 
       if (room?.lastPass) {
         setLastPassAnim(room.lastPass);
@@ -90,39 +87,38 @@ export default function Kemps({ user, socket: socketProp, roomId }) {
       }
     });
 
-    // public pass animation (no faces) - everyone sees a back moving
+    // passAnimation: only back is displayed for all
     socket.on("passAnimation", (data) => {
       setLastPassAnim(data);
       playPass();
       setTimeout(() => setLastPassAnim(null), 800);
     });
 
-    // private receiveCard: only recipient gets the face value
+    // private receiveCard: append to recipient's hand safely
     socket.on("receiveCard", ({ from, to, card }) => {
       if (!to) return;
       setHands((prev) => {
-        const copy = { ...prev };
-        copy[to] = Array.isArray(copy[to]) ? [...copy[to], card] : [card];
-        return copy;
+        // functional update with safe defaults
+        const next = { ...prev };
+        next[to] = Array.isArray(next[to]) ? [...next[to], card] : [card];
+        return next;
       });
     });
 
-    // reveal event: reveal target's hand to everyone
     socket.on("revealCards", ({ target, hands: newHands }) => {
       if (target) {
         setRevealedPlayers((prev) => (prev.includes(target) ? prev : [...prev, target]));
       }
       if (newHands) {
-        // normalize new hands data
-        setHands(normalizeHands({ players: lobbyPlayers, hands: newHands }));
+        setHands(normalizeHands(lobbyPlayers, newHands));
       }
     });
 
-    // game over
     socket.on("gameOver", (info) => {
+      const players = info?.players || lobbyPlayers || [];
       setGameOverInfo(info);
       setShowGameOver(true);
-      setHands(normalizeHands({ players: info?.players || lobbyPlayers, hands: info?.hands || {} }));
+      setHands(normalizeHands(players, info?.hands || {}));
       setRevealedPlayers(Object.keys(info?.hands || {}));
       if (info.winners && info.winners.includes(myName)) {
         setShowConfetti(true);
@@ -142,11 +138,10 @@ export default function Kemps({ user, socket: socketProp, roomId }) {
       socket.off("revealCards");
       socket.off("gameOver");
     };
-  }, [socket, roomId, myName]);
+  }, [socket, roomId, myName, lobbyPlayers]);
 
-  // UI actions
+  // actions
   const selectCard = (i) => {
-    // only allow selecting when it's your turn - but selection state doesn't block render
     if (turnUsername !== myName) return;
     setSelectedIndex(i);
   };
@@ -161,7 +156,7 @@ export default function Kemps({ user, socket: socketProp, roomId }) {
   const sendSignal = () => socket.emit("sendSignal", { roomId, username: myName });
   const callJackwhot = () => socket.emit("callJackwhot", { roomId, callerUsername: myName });
 
-  // suspect modal handlers
+  // suspect modal
   const openSuspect = () => {
     setSuspectTarget(null);
     setShowSuspectModal(true);
@@ -173,35 +168,48 @@ export default function Kemps({ user, socket: socketProp, roomId }) {
     setSuspectTarget(null);
   };
 
-  // Safe getter
+  // safe getter
   const safeHand = (uname) => (hands && Array.isArray(hands[uname]) ? hands[uname] : []);
 
-  // Render helpers
-  const renderTopAlly = () => (
+  // rotation degrees for visual orientation
+  const rotationFor = (player) => {
+    if (!player) return 0;
+    if (player === myName) return 0;             // bottom
+    if (player === ally) return 180;              // top
+    if (player === enemyLeft) return 90;          // left
+    if (player === enemyRight) return -90;        // right
+    return 0;
+  };
+
+  // rendering helpers
+  const renderAlly = () => (
     <div className="flex flex-col items-center mb-6">
       <div className="text-sm mb-2">Ally: {ally}</div>
       <div className="bg-green-600 rounded px-4 py-4 w-full flex justify-center" data-player-area={ally || ""}>
-        {safeHand(ally).length === 0 ? (
-          // show a row of backs (default 5 visually) if ally has no data yet
-          Array.from({ length: 5 }).map((_, i) => <div key={`ab-${i}`} className="mx-1"><Card face={null} faceUp={false} size="sm" /></div>)
-        ) : (
-          safeHand(ally).map((c, i) => <div key={`ally-${i}`} className="mx-1"><Card face={c} faceUp={revealedPlayers.includes(ally)} size="sm" /></div>)
-        )}
+        {safeHand(ally).length === 0
+          ? Array.from({ length: 5 }).map((_, i) => <div key={`ab-${i}`} className="mx-1"><Card face={null} faceUp={false} size="sm" /></div>)
+          : safeHand(ally).map((c, i) => (
+              <div key={`ally-${i}`} className="mx-1" style={{ transform: `rotate(${rotationFor(ally)}deg)` }}>
+                <Card face={c} faceUp={revealedPlayers.includes(ally)} size="sm" />
+              </div>
+            ))
+        }
       </div>
     </div>
   );
 
-  const renderVerticalOpponent = (opp, side) => (
+  const renderOpponentCol = (opp, side) => (
     <div className="flex flex-col items-center space-y-2" data-player-area={opp || ""}>
       <div className={`text-xs ${side === "left" ? "transform -rotate-90" : "transform rotate-90"} whitespace-nowrap`}>{opp || ""}</div>
       <div className="flex flex-col gap-2">
-        {safeHand(opp).length === 0 ? (
-          // show 4 backs if unknown count
-          Array.from({ length: 4 }).map((_, i) => <div key={`${opp}-${i}`} className="w-10 h-16"><Card face={null} faceUp={false} size="sm" /></div>)
-        ) : (
-          safeHand(opp).map((c, i) => <div key={`${opp}-${i}`} className="w-10 h-16"><Card face={null} faceUp={false} size="sm" /></div>)
-          // we intentionally show backs for opponents even if face exists, unless revealed
-        )}
+        {safeHand(opp).length === 0
+          ? Array.from({ length: 4 }).map((_, i) => <div key={`${opp}-bk-${i}`} className="w-10 h-16"><Card face={null} faceUp={false} size="sm" /></div>)
+          : safeHand(opp).map((c, i) => (
+              <div key={`${opp}-${i}`} className="w-10 h-16" style={{ transform: `rotate(${rotationFor(opp)}deg)` }}>
+                <Card face={null} faceUp={false} size="sm" />
+              </div>
+            ))
+        }
       </div>
     </div>
   );
@@ -211,7 +219,7 @@ export default function Kemps({ user, socket: socketProp, roomId }) {
       <div className="text-sm mb-2">You</div>
       <div className="flex gap-3 justify-center" data-player-area={myName}>
         {safeHand(myName).map((c, i) => (
-          <div key={`me-${i}`} onClick={() => selectCard(i)} style={{ cursor: turnUsername === myName ? "pointer" : "default" }}>
+          <div key={`me-${i}`} onClick={() => selectCard(i)} style={{ cursor: turnUsername === myName ? "pointer" : "default", transform: `rotate(${rotationFor(myName)}deg)` }}>
             <Card face={c} faceUp={true} size="md" selected={selectedIndex === i} />
           </div>
         ))}
@@ -231,11 +239,11 @@ export default function Kemps({ user, socket: socketProp, roomId }) {
       </div>
 
       <div className="relative w-full max-w-3xl bg-green-700 rounded-xl p-6">
-        {renderTopAlly()}
+        {renderAlly()}
         <div className="flex justify-between items-start">
-          <div>{renderVerticalOpponent(enemyLeft, "left")}</div>
+          <div>{renderOpponentCol(enemyLeft, "left")}</div>
           <div className="flex-1 mx-6 min-h-[220px] rounded-lg border-0"></div>
-          <div>{renderVerticalOpponent(enemyRight, "right")}</div>
+          <div>{renderOpponentCol(enemyRight, "right")}</div>
         </div>
         {renderMyHand()}
       </div>
@@ -248,7 +256,6 @@ export default function Kemps({ user, socket: socketProp, roomId }) {
 
       <div className="mt-2 text-xs">Turn: <span className="font-bold">{turnUsername ?? "—"}</span></div>
 
-      {/* Suspect modal */}
       {showSuspectModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="bg-white text-black rounded-lg p-4 w-full max-w-sm">
@@ -258,13 +265,7 @@ export default function Kemps({ user, socket: socketProp, roomId }) {
             </div>
             <div className="space-y-2">
               {lobbyPlayers.filter(p => p && p !== myName).map((p) => (
-                <button
-                  key={p}
-                  onClick={() => setSuspectTarget(p)}
-                  className={`w-full text-left px-3 py-2 rounded ${suspectTarget === p ? "bg-zinc-800 text-white" : "bg-zinc-100 text-black"}`}
-                >
-                  {p}
-                </button>
+                <button key={p} onClick={() => setSuspectTarget(p)} className={`w-full text-left px-3 py-2 rounded ${suspectTarget === p ? "bg-zinc-800 text-white" : "bg-zinc-100 text-black"}`}>{p}</button>
               ))}
             </div>
             <div className="mt-3 flex gap-2">
@@ -275,11 +276,10 @@ export default function Kemps({ user, socket: socketProp, roomId }) {
         </div>
       )}
 
-      {/* Game over modal */}
       {showGameOver && gameOverInfo && (
         <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
           <div className="bg-white text-black rounded-lg p-4 w-full max-w-sm">
-            <h2 className="text-lg font-bold mb-2">{gameOverInfo.winners.includes(myName) ? "Your Team Won 🎉" : "Your Team Lost 😞"}</h2>
+            <h2 className="text-lg font-bold mb-2">{gameOverInfo.winners.includes(myName) ? "You Won 🎉" : "You Lose 😞"}</h2>
             <p className="text-sm mb-2">Winning Team: {gameOverInfo.winningTeam}</p>
             <p className="text-sm mb-2">Winners: {gameOverInfo.winners.join(", ")}</p>
 
