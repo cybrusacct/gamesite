@@ -1,4 +1,3 @@
-// server/index.js
 import express from "express";
 import http from "http";
 import path from "path";
@@ -46,19 +45,16 @@ const limiter = rateLimit({
   max: 40, // max 40 requests per window per IP
 });
 
-// Exclude chat history GET from limiter to avoid blocking history loads
+// Exclude GET /api/chat from limiter so history fetches are not blocked
 app.use((req, res, next) => {
   if (req.path === "/api/chat" && req.method === "GET") return next();
   return limiter(req, res, next);
 });
 
-// CORS (set via env for production)
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 app.use(cors({ origin: CORS_ORIGIN }));
 
-/* ---- Expose users API via usersModule ---- */
-
-// Signup
+/* ---- Users API (unchanged behavior) ---- */
 app.post("/api/signup", (req, res) => {
   const { username, pin } = req.body;
   try {
@@ -76,7 +72,6 @@ app.post("/api/signup", (req, res) => {
   }
 });
 
-// Login
 app.post("/api/login", (req, res) => {
   try {
     const { username, pin } = req.body;
@@ -90,14 +85,12 @@ app.post("/api/login", (req, res) => {
   }
 });
 
-// Get profile
 app.get("/api/profile/:username", (req, res) => {
   const u = usersModule.getUser(req.params.username);
   if (!u) return res.status(404).json({ ok: false, error: "User not found" });
   return res.json({ ok: true, user: u });
 });
 
-// Leaderboard
 app.get("/api/leaderboard", (req, res) => {
   const users = usersModule.getAllUsers();
   users.sort((a, b) => {
@@ -107,7 +100,7 @@ app.get("/api/leaderboard", (req, res) => {
   return res.json({ ok: true, leaderboard: users });
 });
 
-/* ---- Chat endpoints for lazy-load ---- */
+/* ---- Chat history HTTP endpoint (lazy-load) ---- */
 app.get("/api/chat", (req, res) => {
   const before = req.query.before || null;
   const limit = parseInt(req.query.limit || "50", 10);
@@ -123,7 +116,6 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, uptime: process.uptime() });
 });
 
-// Fallback for SPA (serve index.html if present)
 app.get("*", (req, res, next) => {
   if (req.path.startsWith("/api") || req.path.startsWith("/socket.io")) return next();
   try {
@@ -134,43 +126,54 @@ app.get("*", (req, res, next) => {
 });
 
 /* -------------------------
-   Socket.IO events (game)
+   Socket.IO (server authoritative)
    ------------------------- */
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const server = http.createServer(app);
-
-// Single-instance Socket.IO setup (no Redis adapter)
-const io = new Server(server, {
-  cors: { origin: CORS_ORIGIN },
-  pingTimeout: 20000,
-});
+const io = new Server(server, { cors: { origin: CORS_ORIGIN }, pingTimeout: 20000 });
 
 console.log("Socket.IO running");
 
 // Periodic cleanup of inactive rooms
 setInterval(() => {
   try { cleanupInactiveRooms(io); } catch (e) { console.warn("cleanup error", e && e.message); }
-}, 60 * 1000); // every 60s
+}, 60 * 1000);
 
 io.on("connection", (socket) => {
   console.log("socket connected", socket.id);
 
+  // Send recent chat history immediately so clients can cache it even when modal is closed
+  try {
+    const recent = chatModule.getMessages({ limit: 50 });
+    socket.emit("chatHistory", recent);
+  } catch (e) {
+    console.warn("chatHistory emit failed", e && e.message);
+  }
+
   socket.on("joinRoom", ({ roomId, username }) => {
     if (!roomId || !username) return;
-    if (!getRoom(roomId)) createRoom(roomId);
     socket.join(roomId);
+    // store username on socket for later use (startGame)
+    socket.data.username = username;
+    socket.data.roomId = roomId;
+
+    if (!getRoom(roomId)) createRoom(roomId);
     addPlayer(roomId, username);
     attachSocket(roomId, username, socket.id);
+
     const room = getRoom(roomId);
     io.to(roomId).emit("updateLobby", { players: room.players, host: room.host, ready: room.ready, version: room.version });
     console.log("JOIN", roomId, username);
   });
 
   socket.on("rejoinRoom", ({ roomId, username }) => {
+    if (!roomId || !username) return;
     const room = getRoom(roomId);
     if (!room) return;
     attachSocket(roomId, username, socket.id);
     socket.join(roomId);
+    socket.data.username = username;
+    socket.data.roomId = roomId;
     socket.emit("updateGame", publicSnapshot(roomId));
     const hand = room.hands?.[username] || [];
     socket.emit("syncHand", { hand, roomVersion: room.version });
@@ -196,14 +199,15 @@ io.on("connection", (socket) => {
   });
 
   socket.on("startGame", ({ roomId }) => {
-    startCountdown(io, roomId, socket.id);
-    console.log("START requested", roomId, socket.id);
+    // use stored username (socket.data.username) as the requester for forced start
+    const requester = socket.data && socket.data.username ? socket.data.username : null;
+    startCountdown(io, roomId, requester);
+    console.log("START requested", roomId, "by", requester);
   });
 
   socket.on("passCard", ({ roomId, fromUsername, cardIndex }) => {
     if (!roomId || !fromUsername) return;
     passCard(io, roomId, fromUsername, cardIndex);
-    // passCard handles emits
   });
 
   socket.on("sendSignal", ({ roomId, username }) => {
@@ -215,14 +219,14 @@ io.on("connection", (socket) => {
     if (!roomId || !callerUsername) return;
     const res = callJackwhot(io, roomId, callerUsername);
     if (!res) return;
-    // Award points and broadcast gameOver handled in higher-level code if needed
+    // higher-level code (index.js previously) may award points and emit gameOver; keep that logic where it was
   });
 
   socket.on("suspect", ({ roomId, suspector, target }) => {
     if (!roomId || !suspector || !target) return;
     const res = suspectPlayer(io, roomId, suspector, target);
     if (!res) return;
-    // Higher-level code handles awarding and broadcasting gameOver
+    // higher-level gameOver handling remains in index.js if required
   });
 
   socket.on("rematch", ({ roomId, username }) => {
@@ -248,7 +252,6 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     console.log("disconnect", socket.id);
-    // Remove any username->socketId mapping for this socket
     try {
       removeSocketMapping(socket.id);
     } catch (e) {
@@ -287,7 +290,6 @@ async function shutdown() {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
-/* ---- Start server ---- */
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
