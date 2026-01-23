@@ -1,14 +1,17 @@
 import { useState, useEffect } from "react";
-import { io } from "socket.io-client";
 import { useNavigate } from "react-router-dom";
+import useSocket from "../../hooks/useSocket";
 
-
-const socket = io(process.env.REACT_APP_API_URL);
-
-
-
+/*
+  JoinGame (fixed)
+  - Use the shared socket hook instead of creating a module-level socket.
+  - Emit joinRoom on create/join using the same socket instance used by the rest of the app.
+  - Listen to updateLobby and countdown using that socket.
+  - Pass the same socket object back via onJoin so Lobby/Kemps use the exact same socket.
+*/
 
 export default function JoinGame({ user, onJoin }) {
+  const socket = useSocket();
   const [createRoomId, setCreateRoomId] = useState("");
   const [joinRoomId, setJoinRoomId] = useState("");
   const [players, setPlayers] = useState([]);
@@ -16,38 +19,46 @@ export default function JoinGame({ user, onJoin }) {
   const [error, setError] = useState("");
   const navigate = useNavigate();
 
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleUpdateLobby = (payload) => {
+      const playersArr = Array.isArray(payload) ? payload : payload?.players || [];
+      setPlayers(playersArr || []);
+    };
+
+    const handleCountdown = (seconds) => {
+      setCountdown(seconds);
+    };
+
+    socket.on("updateLobby", handleUpdateLobby);
+    socket.on("countdown", handleCountdown);
+
+    return () => {
+      socket.off("updateLobby", handleUpdateLobby);
+      socket.off("countdown", handleCountdown);
+    };
+  }, [socket]);
+
   const handleCreate = () => {
+    setError("");
     if (!createRoomId) return setError("Enter a room ID to create");
-    // For simplicity we just join the room immediately (server creates it if missing)
+    if (!socket) return setError("No socket connection");
+    // Join/create room (server creates it if missing)
     socket.emit("joinRoom", { roomId: createRoomId, username: user.username });
+    // Ensure the rest of the app uses the same socket
     onJoin({ socket, roomId: createRoomId, role: "You" });
     navigate("/lobby");
   };
 
   const handleJoin = () => {
+    setError("");
     if (!joinRoomId) return setError("Enter a room ID to join");
+    if (!socket) return setError("No socket connection");
     socket.emit("joinRoom", { roomId: joinRoomId, username: user.username });
     onJoin({ socket, roomId: joinRoomId, role: "You" });
     navigate("/lobby");
   };
-
-  // Listen to lobby updates (server emits "updateLobby" with object {players, host} )
-  useEffect(() => {
-    socket.on("updateLobby", (payload) => {
-      const playersArr = Array.isArray(payload) ? payload : payload?.players || [];
-      setPlayers(playersArr || []);
-    });
-
-    // server-driven countdown events
-    socket.on("countdown", (seconds) => {
-      setCountdown(seconds);
-    });
-
-    return () => {
-      socket.off("updateLobby");
-      socket.off("countdown");
-    };
-  }, []);
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-linear-to-br from-purple-600 to-indigo-950 text-white p-4">
