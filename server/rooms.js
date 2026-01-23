@@ -1,18 +1,16 @@
 // server/rooms.js
-// Authoritative room state manager
+// Authoritative room state manager (self-contained)
 // - each room has version, lastActive, locked, countdown (interval id), hands (server-side full faces)
 // - public updateGame emits a masked view (cardCounts) + version
 // - private events: initHand, receiveCard, syncHand
 
-import { createDeck as _createDeck, shuffle as _shuffle } from "./rooms_helpers.js"; // optional - or inline below
-
 const rooms = {};
 
 /* =======================
-   HELPERS
+   HELPERS (self-contained)
 ======================= */
+// Deck counts per spec: 5 × Circle, 4 × Square, 4 × Cross, 4 × Heart (total 17)
 function createDeck() {
-  // Deck counts per spec: 5 × Circle, 4 × Square, 4 × Cross, 4 × Heart (total 17)
   const deck = [];
   const counts = {
     Circle: 5,
@@ -41,7 +39,7 @@ export function createRoom(roomId) {
     players: [],
     host: null,
     hands: {},           // full faces (server-only truth)
-    cardCounts: {},      // public counts
+    cardCounts: {},      // public counts (convenience)
     deck: [],
     turnIndex: 0,
     countdown: null,     // { intervalId, value }
@@ -53,6 +51,7 @@ export function createRoom(roomId) {
     gameActive: false,
     ready: {},           // username -> bool
     lastActive: Date.now(),
+    _socketMap: {},      // username -> socketId for private emits
   };
 }
 
@@ -88,14 +87,13 @@ export function removePlayer(roomId, username) {
   delete room.cardCounts[username];
   delete room.ready[username];
   if (room.host === username) room.host = room.players[0] || null;
+  if (room._socketMap && room._socketMap[username]) delete room._socketMap[username];
   room.version++;
   touchRoom(room);
 }
 
 /* =======================
-   UTILS: mask public snapshot
-   Returns object suitable for updateGame emit
-   - players, host, turnIndex, cardCounts (lengths), version, lastPass, gameActive, revealedPlayers, locked
+   PUBLIC SNAPSHOT (masked)
 ======================= */
 export function publicSnapshot(roomId) {
   const room = rooms[roomId];
@@ -118,31 +116,30 @@ export function publicSnapshot(roomId) {
 }
 
 /* =======================
-   START GAME / COUNTDOWN
-   Enforce single countdown, readiness, lock room when starting
+   COUNTDOWN / START (server authoritative)
+   - single countdown per room
+   - requires all ready unless forced by host
+   - locks room while countdown runs
+   - deals on expire and emits canonical events
 ======================= */
 export function startCountdown(io, roomId, forcedBy = null) {
   const room = rooms[roomId];
   if (!room) return;
   touchRoom(room);
 
-  // only allow when 2..4 players
   if (room.players.length < 2 || room.players.length > 4) return;
 
-  // require all players ready (unless forcedBy is host and we allow forced start)
   const allReady = room.players.every((p) => room.ready[p]);
   if (!allReady && forcedBy !== room.host) {
-    // do not start
+    // do not start if not all ready and not forced by host
     return;
   }
 
-  if (room.countdown) {
-    // already counting
-    return;
-  }
+  if (room.countdown) return; // already counting
 
-  room.locked = true; // prevent leaving/joins affecting start
+  room.locked = true;
   room.countdown = { intervalId: null, value: 5 };
+
   const emitCountdown = () => {
     io.to(roomId).emit("countdown", room.countdown.value);
   };
@@ -155,11 +152,11 @@ export function startCountdown(io, roomId, forcedBy = null) {
       clearInterval(room.countdown.intervalId);
       room.countdown = null;
 
-      // DEAL: authoritative on server
+      // DEAL authoritative
       room.deck = createDeck();
       shuffle(room.deck);
       room.hands = {};
-      // For 4 players: one gets 5 randomly as spec; for 2-3 distribute as evenly as possible
+
       const playerCount = room.players.length;
       let fiveIndex = -1;
       if (playerCount === 4) fiveIndex = Math.floor(Math.random() * 4);
@@ -179,7 +176,6 @@ export function startCountdown(io, roomId, forcedBy = null) {
         }
       });
 
-      // set turnIndex to fiveIndex if present else 0
       room.turnIndex = fiveIndex >= 0 ? fiveIndex : 0;
       room.gameActive = true;
       room.lastPass = null;
@@ -188,29 +184,27 @@ export function startCountdown(io, roomId, forcedBy = null) {
       room.version++;
       touchRoom(room);
 
-      // Private: send each player their own hand (init)
+      // send private initHand to each player (if socket mapping exists)
       room.players.forEach((p) => {
         const sid = room._socketMap?.[p];
-        if (sid) {
-          io.to(sid).emit("initHand", { hand: room.hands[p] || [], roomVersion: room.version });
-        }
+        if (sid) io.to(sid).emit("initHand", { hand: room.hands[p] || [], roomVersion: room.version });
       });
 
-      // Public canonical update (masked)
+      // send canonical public snapshot
       io.to(roomId).emit("updateGame", publicSnapshot(roomId));
+      console.log("START_GAME", roomId, "version", room.version);
     }
   }, 1000);
 }
 
 /* =======================
-   Rematch: re-deal to same players (host can trigger)
+   REMATCH
 ======================= */
 export function rematchRoom(io, roomId) {
   const room = rooms[roomId];
   if (!room) return null;
   if (room.players.length < 2) return null;
 
-  // reset internal deck/hands and deal similar to startCountdown (but immediate)
   room.deck = createDeck();
   shuffle(room.deck);
   room.hands = {};
@@ -241,23 +235,21 @@ export function rematchRoom(io, roomId) {
   room.version++;
   touchRoom(room);
 
-  // send private initHand and public updateGame
   room.players.forEach((p) => {
     const sid = room._socketMap?.[p];
     if (sid) io.to(sid).emit("initHand", { hand: room.hands[p] || [], roomVersion: room.version });
   });
   io.to(roomId).emit("updateGame", publicSnapshot(roomId));
+  console.log("REMATCH", roomId, "version", room.version);
   return room;
 }
 
 /* =======================
-   PASS CARD
-   Server authoritative:
-   - update server hands
-   - record lastPass (from,to,ts) for animation
-   - send passAnimation (no face) to all
-   - send private receiveCard to recipient with face
-   - emit one canonical updateGame (masked) with incremented version
+   PASS CARD (authoritative)
+   - server updates hands
+   - emits passAnimation (mask) to room
+   - emits private receiveCard to recipient
+   - emits canonical updateGame
 ======================= */
 export function passCard(io, roomId, fromUsername, cardIndex) {
   const room = rooms[roomId];
@@ -270,50 +262,39 @@ export function passCard(io, roomId, fromUsername, cardIndex) {
   const hand = room.hands[fromUsername];
   if (!Array.isArray(hand) || cardIndex == null || cardIndex < 0 || cardIndex >= hand.length) return null;
 
-  // remove the card (server-side truth)
   const [card] = hand.splice(cardIndex, 1);
 
-  // anticlockwise recipient calculation
   const nextIndex = (room.turnIndex + (room.players.length - 1)) % room.players.length;
   const nextPlayer = room.players[nextIndex];
 
-  // append face to recipient's server hand
   if (!Array.isArray(room.hands[nextPlayer])) room.hands[nextPlayer] = [];
   room.hands[nextPlayer].push(card);
 
-  // record lastPass for animation (no face included in public)
   room.lastPass = { from: fromUsername, to: nextPlayer, ts: Date.now() };
-
-  // advance turn
   room.turnIndex = nextIndex;
-
-  // increment version
   room.version++;
   touchRoom(room);
 
-  // Save cardCounts (for convenience)
+  // update cardCounts
   room.players.forEach((p) => {
     room.cardCounts[p] = Array.isArray(room.hands[p]) ? room.hands[p].length : 0;
   });
 
-  // Emit passAnimation (mask)
   io.to(roomId).emit("passAnimation", { from: fromUsername, to: nextPlayer, ts: room.lastPass.ts });
 
-  // Private send face to recipient
   const sid = room._socketMap?.[nextPlayer];
   if (sid) {
     io.to(sid).emit("receiveCard", { from: fromUsername, to: nextPlayer, card, ts: Date.now(), roomVersion: room.version });
   }
 
-  // One canonical public update
   io.to(roomId).emit("updateGame", publicSnapshot(roomId));
   console.log("PASS", roomId, fromUsername, "->", nextPlayer, "version", room.version);
   return room.lastPass;
 }
 
 /* =======================
-   SIGNAL / CALL / SUSPECT (authoritative)
-   Each action updates room state, increments version, and emits single updateGame.
+   SIGNAL / CALL / SUSPECT
+   - update room state, increment version, emit canonical updateGame
 ======================= */
 export function sendSignal(io, roomId, signerUsername) {
   const room = rooms[roomId];
@@ -336,6 +317,7 @@ export function sendSignal(io, roomId, signerUsername) {
   io.to(roomId).emit("playSound", { type: "signal" });
   io.to(roomId).emit("updateGame", publicSnapshot(roomId));
   touchRoom(room);
+  console.log("SIGNAL", roomId, signerUsername, "ally", allyName, "version", room.version);
   return room.pendingSignal;
 }
 
@@ -357,10 +339,7 @@ export function callJackwhot(io, roomId, callerUsername) {
   const allyHand = room.hands[ally];
   if (!allyHand) return null;
 
-  const counts = allyHand.reduce((acc, shape) => {
-    acc[shape] = (acc[shape] || 0) + 1;
-    return acc;
-  }, {});
+  const counts = allyHand.reduce((acc, shape) => { acc[shape] = (acc[shape] || 0) + 1; return acc; }, {});
   const hasFour = Object.values(counts).some((c) => c >= 4);
 
   let winners = [];
@@ -391,6 +370,8 @@ export function callJackwhot(io, roomId, callerUsername) {
   room.version++;
   touchRoom(room);
 
+  // Return resolution data; higher-level code (index.js) may award points and broadcast gameOver
+  console.log("CALL_JACKWHOT", roomId, callerUsername, "win?", hasFour, "version", room.version);
   return { win: hasFour, winners, winningTeam };
 }
 
@@ -437,11 +418,12 @@ export function suspectPlayer(io, roomId, suspector, target) {
   room.version++;
   touchRoom(room);
 
+  console.log("SUSPECT", roomId, suspector, "target", target, "win?", hasFour, "version", room.version);
   return { win: hasFour, winners, winningTeam };
 }
 
 /* =======================
-   Host actions
+   HOST ACTIONS
 ======================= */
 export function swapPlayers(roomId, indexA, indexB) {
   const room = rooms[roomId];
@@ -462,12 +444,13 @@ export function kickPlayer(roomId, username) {
   delete room.hands[username];
   delete room.ready[username];
   if (room.host === username) room.host = room.players[0] || null;
+  if (room._socketMap && room._socketMap[username]) delete room._socketMap[username];
   room.version++;
   touchRoom(room);
 }
 
 /* =======================
-   READY
+   READY / ATTACH SOCKET
 ======================= */
 export function setPlayerReady(roomId, username, ready) {
   const room = rooms[roomId];
@@ -477,11 +460,6 @@ export function setPlayerReady(roomId, username, ready) {
   touchRoom(room);
 }
 
-/* =======================
-   Rejoin / Sync helpers
-   - attach socket id mapping for private emits
-   - on rejoin, send public snapshot + private syncHand to requester
-======================= */
 export function attachSocket(roomId, username, socketId) {
   const room = rooms[roomId];
   if (!room) return;
@@ -501,10 +479,8 @@ export function cleanupInactiveRooms(io, maxIdleMs = 5 * 60 * 1000) {
     if (room.lastActive && (now - room.lastActive) > maxIdleMs) {
       console.log("CLEANUP: destroying inactive room", roomId);
       try {
-        // notify connected sockets if any
         io.to(roomId).emit("roomExpired", { roomId, reason: "inactive" });
       } catch (e) {}
-      // clear countdown
       if (room.countdown && room.countdown.intervalId) {
         try { clearInterval(room.countdown.intervalId); } catch (e) {}
       }
