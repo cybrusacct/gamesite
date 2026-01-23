@@ -1,68 +1,66 @@
-import React, { useState } from "react";
+import React from "react";
 import { useNavigate } from "react-router-dom";
-import Navbar from "../components/Navbar";
-import ProfileModal from "../components/ProfileModal";
+
+/*
+  LandingPage: offers game tiles. Clicking the Kemps (Jackwhot) tile navigates to /join
+  where the JoinGame component shows the Create / Join UI.
+*/
 
 export default function LandingPage({ user, socket }) {
   const navigate = useNavigate();
-  const [showProfile, setShowProfile] = useState(false);
 
   return (
-    <div className="min-h-screen bg-linear-to-br from-purple-700 to-indigo-900 flex flex-col items-center p-4 text-white">
-      <Navbar user={user} socket={socket} onOpenProfile={() => setShowProfile(true)} />
+    <div className="min-h-screen flex flex-col items-center justify-start bg-linear-to-br from-gray-900 to-green-800 text-white p-8">
+      <div className="w-full max-w-4xl">
+        <header className="mb-8 text-center">
+          <h1 className="text-4xl font-bold">GameSite</h1>
+          <p className="text-gray-300 mt-2">Pick a game and play with friends.</p>
+        </header>
 
-      {/* Welcome / Hero Section */}
-      <header className="text-center mt-8 mb-6">
-        <h1 className="text-3xl sm:text-5xl font-bold">🎮 GameSite</h1>
-        <p className="mt-2 text-sm sm:text-lg">
-          Welcome {user?.username || "Player"}! Choose a game to start.
-        </p>
-      </header>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Kemps (Jackwhot) card */}
+          <div className="bg-green-700 rounded-xl p-6 shadow-lg flex flex-col">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold">Kemps (Jackwhot)</h2>
+                <p className="text-sm text-green-100 mt-1">Traditional partner-based card game. Click to create or join a room.</p>
+              </div>
+              <div className="text-sm text-green-200">{/* optional icon */}</div>
+            </div>
 
-      {/* Game Cards */}
-      <div className="flex flex-col gap-4 w-full max-w-md">
-        {/* Kemps (Jackwhot) */}
-        <div
-          className="p-6 rounded-xl shadow-xl cursor-pointer transition transform bg-red-500 hover:bg-red-600 hover:scale-105"
-          onClick={() => navigate("/join")}
-        >
-          <h2 className="text-xl sm:text-2xl font-bold">
-            Kemps (Jackwhot)
-          </h2>
-          <p className="text-sm sm:text-base mt-1">
-            4 players, team strategy game
-          </p>
-        </div>
+            <div className="mt-6 flex gap-3">
+              <button
+                onClick={() => navigate("/join")}
+                className="bg-white text-green-800 px-4 py-2 rounded font-semibold hover:bg-gray-100"
+              >
+                Play Kemps
+              </button>
 
-        {/* Memory Game */}
-        <div
-          className="p-6 rounded-xl shadow-xl cursor-pointer transition transform bg-blue-500 hover:bg-blue-600 hover:scale-105"
-          onClick={() => navigate("/memory")}
-        >
-          <h2 className="text-xl sm:text-2xl font-bold">Memory Game</h2>
-          <p className="text-sm sm:text-base mt-1">
-            2–4 players, match the cards
-          </p>
-        </div>
+              <button
+                onClick={() => {
+                  // show quick rules or demo; keep simple
+                  alert("Kemps (Jackwhot) - partners, pass cards, call JACKWHOT to win. Click Play to create or join a room.");
+                }}
+                className="bg-transparent border border-white/20 px-4 py-2 rounded text-sm"
+              >
+                Rules
+              </button>
+            </div>
+          </div>
 
-        {/* Flag Trivia */}
-        <div
-          className="p-6 rounded-xl shadow-xl cursor-pointer transition transform bg-green-500 hover:bg-green-600 hover:scale-105"
-          onClick={() => navigate("/flag-trivia")}
-        >
-          <h2 className="text-xl sm:text-2xl font-bold">Flag Trivia</h2>
-          <p className="text-sm sm:text-base mt-1">
-            2–4 players, quick quiz fun
-          </p>
+          {/* Placeholder for other games */}
+          <div className="bg-indigo-700 rounded-xl p-6 shadow-lg flex flex-col">
+            <div>
+              <h2 className="text-2xl font-bold">Other Games</h2>
+              <p className="text-sm text-indigo-100 mt-1">Memory, Flag trivia, and more.</p>
+            </div>
+
+            <div className="mt-6">
+              <button onClick={() => navigate("/memory")} className="bg-white text-indigo-700 px-4 py-2 rounded font-semibold hover:bg-gray-100">Play Memory</button>
+            </div>
+          </div>
         </div>
       </div>
-
-      {/* Footer */}
-      <footer className="mt-auto text-xs sm:text-sm text-gray-300 mb-4">
-        &copy; 2026 Cybrus. All rights reserved.
-      </footer>
-
-      {showProfile && <ProfileModal username={user.username} onClose={() => setShowProfile(false)} />}
     </div>
   );
 }

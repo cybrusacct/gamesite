@@ -5,12 +5,8 @@ import ProfileModal from "./ProfileModal";
 import LeaderboardModal from "./LeaderboardModal";
 
 /*
-  Navbar now maintains a small chat cache so recent messages are available
-  even when the Chat modal is not open. It listens for:
-    - "chatHistory" (initial history on connect)
-    - "globalChatMessage" (new messages)
-  and stores them in local state. Those messages are provided to ChatModal
-  via `initialMessages` for instant rendering.
+  Navbar (no Play button) — the Join/Create flow is reached from LandingPage (Kemps button).
+  Keeps chat caching so recent messages are available anytime.
 */
 
 export default function Navbar({ user, socket, onOpenProfile }) {
@@ -26,7 +22,6 @@ export default function Navbar({ user, socket, onOpenProfile }) {
     const handleHistory = (messages) => {
       if (!Array.isArray(messages)) return;
       setChatCache((prev) => {
-        // merge/dedupe by username|ts|message
         const map = new Map();
         prev.forEach((m) => map.set(`${m.username}|${m.ts}|${m.message}`, m));
         messages.forEach((m) => map.set(`${m.username}|${m.ts}|${m.message}`, m));
@@ -39,12 +34,10 @@ export default function Navbar({ user, socket, onOpenProfile }) {
     const handleIncoming = (msg) => {
       if (!msg || !msg.ts) return;
       setChatCache((prev) => {
-        // append if not duplicate
         const key = `${msg.username}|${msg.ts}|${msg.message}`;
         const exists = prev.some((m) => `${m.username}|${m.ts}|${m.message}` === key);
         if (exists) return prev;
         const next = [...prev, msg];
-        // keep max messages to, say, 200
         if (next.length > 200) next.splice(0, next.length - 200);
         return next;
       });
@@ -71,7 +64,6 @@ export default function Navbar({ user, socket, onOpenProfile }) {
         <div className="flex items-center gap-3 relative">
           <div className="relative">
             <button onClick={() => setShowChat((s) => !s)} className="p-2 rounded bg-zinc-800">💬 Chat</button>
-            {/* small preview panel */}
             <div className="absolute right-0 mt-10 w-64 bg-white text-black rounded shadow-lg p-2 hidden md:block">
               {previewMessages.length === 0 ? (
                 <div className="text-xs text-gray-600">No messages</div>
