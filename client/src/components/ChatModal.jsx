@@ -1,24 +1,18 @@
 import React, { useEffect, useState, useRef } from "react";
 
 /*
-  Global chat (robust):
-  - fetch latest messages on mount
-  - subscribe to socket events and merge incoming messages
-  - dedupe by (username + ts + message)
-  - auto-scroll to bottom after fetch and on new messages
+  Global chat robust behavior:
+  - Subscribe to socket BEFORE fetching so we don't miss messages
+  - Merge + dedupe fetched messages and incoming socket messages
+  - Auto-scroll to bottom after fetch and when new messages appended
 */
 
 const API_CHAT = "/api/chat?limit=50";
 
-function dedupeMessages(existing, incoming) {
+function dedupe(existing, incoming) {
   const map = new Map();
-  existing.forEach((m) => {
-    map.set(`${m.username}|${m.ts}|${m.message}`, m);
-  });
-  incoming.forEach((m) => {
-    map.set(`${m.username}|${m.ts}|${m.message}`, m);
-  });
-  // return sorted by timestamp ascending
+  existing.forEach((m) => map.set(`${m.username}|${m.ts}|${m.message}`, m));
+  incoming.forEach((m) => map.set(`${m.username}|${m.ts}|${m.message}`, m));
   const arr = Array.from(map.values());
   arr.sort((a, b) => new Date(a.ts) - new Date(b.ts));
   return arr;
@@ -35,19 +29,15 @@ export default function ChatModal({ socket, username, onClose }) {
     if (!socket) return;
     let mounted = true;
 
-    // subscribe first so we don't miss incoming messages during fetch
     const handler = (msg) => {
       setMessages((prev) => {
-        const merged = dedupeMessages(prev, [msg]);
-        // update oldestTsRef if needed
-        if (!oldestTsRef.current && merged.length > 0) oldestTsRef.current = merged[0].ts;
-        // auto-scroll
-        setTimeout(() => {
-          if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
-        }, 30);
+        const merged = dedupe(prev, [msg]);
+        if (!oldestTsRef.current && merged.length) oldestTsRef.current = merged[0].ts;
+        // scroll to bottom on next tick
+        setTimeout(() => { if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight; }, 30);
         return merged;
       });
-      // small sound on receive
+      // small notification tone
       try {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
         const o = ctx.createOscillator();
@@ -62,28 +52,24 @@ export default function ChatModal({ socket, username, onClose }) {
       } catch (e) {}
     };
 
+    // subscribe first
     socket.on("globalChatMessage", handler);
 
-    // fetch latest messages
+    // fetch latest
     fetch(API_CHAT)
       .then((r) => r.json())
       .then((data) => {
         if (!mounted) return;
         if (data.ok && Array.isArray(data.messages)) {
-          // dedupe merge in case socket received messages during fetch
           setMessages((prev) => {
-            const merged = dedupeMessages(prev, data.messages);
-            if (merged.length > 0) oldestTsRef.current = merged[0].ts;
+            const merged = dedupe(prev, data.messages);
+            if (merged.length) oldestTsRef.current = merged[0].ts;
             return merged;
           });
-          // scroll to bottom
-          setTimeout(() => {
-            if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
-          }, 50);
+          setTimeout(() => { if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight; }, 50);
         }
       })
-      .catch(() => {})
-      .finally(() => { /* nothing */ });
+      .catch(() => { /* ignore */ });
 
     return () => {
       mounted = false;
@@ -91,7 +77,6 @@ export default function ChatModal({ socket, username, onClose }) {
     };
   }, [socket]);
 
-  // lazy-load older on scroll-to-top
   const onScroll = () => {
     if (!listRef.current || loadingRef.current) return;
     if (listRef.current.scrollTop < 80) {
@@ -106,20 +91,16 @@ export default function ChatModal({ socket, username, onClose }) {
         .then((data) => {
           if (data.ok && Array.isArray(data.messages) && data.messages.length > 0) {
             setMessages((prev) => {
-              const merged = dedupeMessages(data.messages, prev);
-              if (merged.length > 0) oldestTsRef.current = merged[0].ts;
+              const merged = dedupe(data.messages, prev);
+              if (merged.length) oldestTsRef.current = merged[0].ts;
               return merged;
             });
-            // preserve scroll rough position
-            setTimeout(() => {
-              if (listRef.current) listRef.current.scrollTop = 200;
-            }, 60);
+            // keep scroll pos approx
+            setTimeout(() => { if (listRef.current) listRef.current.scrollTop = 200; }, 50);
           }
         })
         .catch(() => {})
-        .finally(() => {
-          loadingRef.current = false;
-        });
+        .finally(() => { loadingRef.current = false; });
     }
   };
 
@@ -128,11 +109,8 @@ export default function ChatModal({ socket, username, onClose }) {
     const ts = new Date().toISOString();
     const payload = { username, message: text.trim(), ts };
     if (socket) socket.emit("globalChat", payload);
-    // Do NOT push locally — server broadcast will arrive and merge
     setText("");
-    setTimeout(() => {
-      if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
-    }, 50);
+    setTimeout(() => { if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight; }, 50);
   };
 
   return (
